@@ -29,7 +29,7 @@ data-statistics-check/
 │   ├── 与示例文件的差异.md
 │   └── 构建过程文档.md
 └── scripts/                    # 8 个文件，全部为执行路径所需
-    ├── run_skill.py            # 入口：--config <json> --input <xlsx> [--output-dir <dir>]
+    ├── run_skill.py            # 入口：--config <json> --input <xlsx> [--output-dir <dir>] [--only <表名>]
     ├── stat_engine.py          # 引擎内核：按 JSON 配置构建 8 张工作表
     ├── formula_builder.py      # Excel 公式生成器（限定数据区间）
     ├── excel_styler.py         # 统一美化（表头/斑马纹/边框/列宽/冻结/条件格式）
@@ -74,6 +74,21 @@ python3 scripts/verify.py \
 
 - `--output-dir` 可省略：省略时结果文件写到**当前工作目录**（此时先 `cd` 到输出目录，
   `--config` / `--input` 用相对路径回指）
+- ✅ **默认执行就是上面第 1) 条命令：交付物 = 完整 8 张表那三份（结果 xlsx + 回执 + 自检报告），到此为止。**
+  **不要“顺手”再多产出一份单表**——除非用户明确点名要某一张表，否则一律不跑下面的 `--only`。
+- 用户**明确要**某一张表时，用 `--only`（不改代码，也不手工删表）：
+  ```bash
+  python3 scripts/run_skill.py \
+      --config     config/contract_repayment.json \
+      --input      "输入/附件1-合同开票及回款核对表.xlsx" \
+      --output-dir 运行成果 \
+      --only       同合同号合并汇总
+  ```
+  产出 `合同开票及回款核对表分析结果_<姓名>_同合同号合并汇总.xlsx`：内含**「原始数据」+ 该表两张**，
+  公式与缓存值均保留（可动态重算）。引擎会自动做**公式依赖闭包**
+  （`stat_engine._resolve_keep_sheets`）——被保留的表引用到哪张表就一并带上，
+  因此**不会出现 `#REF!`**；输出表序仍按配置表序（「原始数据」仍在前）。
+  子集导出**不写运行回执**，以免覆盖完整交付物那份。
 - 交付产物三份：结果 Excel、`运行回执.json`、`自检报告.json`，都放 `运行成果/`；
   **不要写到 `config/`**，那里只放业务配置
 - `运行回执.json` 与结果文件同目录、**默认自动生成**（`--report` 可改路径）；
@@ -90,6 +105,7 @@ python3 scripts/verify.py \
 | `run_skill.py` | `--config` | 是 | 业务配置 JSON 路径 |
 | | `--input` | 是 | 输入源表路径 |
 | | `--output-dir` | 否 | 输出目录；**不传则写到当前工作目录**（文件名取自配置 `output_filename`） |
+| | `--only` | 否 | **只导出指定工作表**（逗号分隔，如 `--only 同合同号合并汇总`）。⚠️ **仅在用户明确要求单张表时使用**，默认执行不要加。公式引用到的表（「原始数据」）会**自动一并导出**以免 `#REF!`；文件名追加 `_<表名>`，且**不写运行回执**（避免覆盖完整交付物那份） |
 | | `--report` | 否 | 运行回执 JSON 路径；不传则写到结果文件同目录的 `运行回执.json` |
 | `verify.py` | `--file` | 是 | 上一步产出的结果 xlsx |
 | | `--source` | 是 | 原始输入 xlsx（独立重算源事实用） |

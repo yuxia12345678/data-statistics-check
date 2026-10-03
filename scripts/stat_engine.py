@@ -527,12 +527,45 @@ class GeneralStatSkillEngine:
 
     # ============================================================ 输出
 
-    def render_export_excel(self, output_file_path: str):
+    def _resolve_keep_sheets(self, wb, requested):
+        """
+        子集导出时的「公式依赖闭包」：被保留的工作表若在公式里引用了其它工作表，
+        那些被引用的表也必须一起导出，否则公式会全部变成 `#REF!`。
+
+        :param wb: 已构建完 8 张表的 workbook（尚未裁剪）
+        :param requested: 调用方请求保留的表名列表
+        :return: 按**原表序**排好的工作表名列表（保证「原始数据」仍在前）
+        """
+        all_names = [w.title for w in wb.worksheets]
+        unknown = [s for s in requested if s not in all_names]
+        if unknown:
+            raise ValueError("【子集导出】找不到工作表 %s；可选：%s" % (unknown, all_names))
+        keep = list(requested)
+        changed = True
+        while changed:
+            changed = False
+            for name in list(keep):
+                for row in wb[name].iter_rows():
+                    for cell in row:
+                        v = cell.value
+                        if not (isinstance(v, str) and v.startswith("=")):
+                            continue
+                        for other in all_names:
+                            if other not in keep and (other + "!") in v:
+                                keep.append(other)
+                                changed = True
+        return [n for n in all_names if n in keep]
+
+    def render_export_excel(self, output_file_path: str, only_sheets=None):
         """
         统一输出入口：
         1) 沿用源 workbook，仅把源工作表改名为「原始数据」——值 / 行列顺序 / 数字格式零改动；
         2) 依次生成 任务1 → 任务2 → 任务3 → 统计总览（保证统计总览排最后）；
         3) 保存后注入公式缓存值，并把运行事实写入 self.report（由 run_skill.py 落盘）。
+
+        :param only_sheets: 只导出指定工作表（列表）——用于“单独出一个表”的场景。
+            被保留的表若在公式里引用了别的表，那些表会**自动一并导出**（否则公式全成
+            `#REF!`）；输出顺序仍按配置表序。`None` = 导出全部 8 张（默认交付物）。
         """
         t0 = time.time()
         wb = load_workbook(self.input_excel_path, data_only=False)
@@ -577,6 +610,17 @@ class GeneralStatSkillEngine:
         self.run_task3_multi_dim_formula_build(wb, field_to_col)
         self.run_overview_formula_build(wb, field_to_col)
 
+        # 子集导出（--only）：先做公式依赖闭包，再按配置表序裁剪掉其余工作表。
+        # 不裁剪「原始数据」这类被引用表，避免公式变成 #REF!。
+        if only_sheets:
+            keep = self._resolve_keep_sheets(wb, list(only_sheets))
+            for _name in [w.title for w in wb.worksheets]:
+                if _name not in keep:
+                    del wb[_name]
+            expected = {k: v for k, v in self.expected.items() if k in keep}
+        else:
+            expected = self.expected
+
         try:
             wb.save(output_file_path)
         except PermissionError as exc:
@@ -591,7 +635,7 @@ class GeneralStatSkillEngine:
             wb.close()
 
         # 注入公式缓存值，使程序化读取也能取到数值
-        stats = inject_cached_values(output_file_path, self.expected)
+        stats = inject_cached_values(output_file_path, expected)
         errors = scan_errors(output_file_path)
 
         # 运行回执：产物侧的客观事实

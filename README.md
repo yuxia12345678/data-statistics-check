@@ -35,7 +35,7 @@ data-statistics-check/
 ├── config/                     # 业务配置（contract_repayment.json）
 ├── references/                 # 口径与公式、样式、与示例的差异、构建过程
 └── scripts/                    # 8 个文件，全部为执行路径所需
-    ├── run_skill.py            # 入口（--config / --input / --output-dir）
+    ├── run_skill.py            # 入口（--config / --input / --output-dir / --only）
     ├── stat_engine.py          # 引擎内核（按 JSON 建 8 张表）
     ├── formula_builder.py      # Excel 公式生成器
     ├── excel_styler.py         # 统一美化（配置驱动）
@@ -71,6 +71,10 @@ python scripts/verify.py \
 
 `--output-dir` 可省略，省略时结果文件写入当前工作目录（此时先 `cd` 到输出目录，`--config`/`--input` 用相对路径回指）。
 运行回执 `运行回执.json` 与结果文件同目录、默认自动生成（`--report` 可改路径）。
+
+> **只导出某一张表**（仅按需使用：默认执行只产出完整 8 张表那三份产物）：加 `--only 同合同号合并汇总`，
+> 结果另存为 `…_同合同号合并汇总.xlsx`（内含「原始数据」+ 该表，公式与缓存值均保留、可动态重算）。
+> 被公式引用的表由引擎**自动带上**，不会出现 `#REF!`；该模式不写运行回执，完整交付物那份不受影响。
 Windows 下命令用 `python`。自检退出码 0 = 全部合规；1 = 有不合规项，按报告里的 `id` / `detail` 定位。
 
 ## 六、输入
