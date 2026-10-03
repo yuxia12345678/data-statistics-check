@@ -13,3 +13,6 @@ Thumbs.db
 
 # Excel 临时/锁文件
 ~$*.xlsx
+
+# 运行成果/ 的按需子集导出（run_skill.py --only），留在本地不入库
+运行成果/*_*_*.xlsx
