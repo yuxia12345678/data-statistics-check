@@ -23,7 +23,7 @@
         "col_width_padding": 3,
         "freeze_panes": "A3",
         "raw_beautify": false,
-        "reason_soft_cf": false,
+        "reason_soft_cf": true,
         "reason_soft_colors": [
             "FFFDE9D9",
             "FFDCE6F1",
@@ -386,7 +386,7 @@
             ],
             "sheet_order": [
                 "原始数据", "同合同号合并汇总", "未回款原因分类汇总",
-                "区域统计", "部门统计", "账龄统计", "客户分类统计", "统计总览"
+                "统计总览", "区域统计", "部门统计", "账龄统计", "客户分类统计"
             ],
             "raw_override_title_row": false,
             "raw_preserve_strict": false,
@@ -411,7 +411,7 @@
             ],
             "sheet_order": [
                 "原始数据", "同合同号合并汇总", "未回款原因分类汇总",
-                "区域统计", "部门统计", "账龄统计", "客户分类统计", "统计总览"
+                "统计总览", "区域统计", "部门统计", "账龄统计", "客户分类统计"
             ],
             "raw_override_title_row": true,
             "raw_preserve_strict": false,

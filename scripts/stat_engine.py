@@ -556,12 +556,29 @@ class GeneralStatSkillEngine:
                                 changed = True
         return [n for n in all_names if n in keep]
 
+    def _apply_sheet_order(self, wb):
+        """
+        按配置 `profiles[<default_profile>].sheet_order` 重排工作表顺序。
+
+        **构建顺序与交付顺序解耦**：改表序只改配置，不用动代码（单一事实源）。
+        题目正文的编号顺序是「统计总览」排第 4 位（区域 / 部门 / 账龄 / 客户分类其后）。
+        子集导出（--only）时只对保留下来的表排序；有未登记的表则直接报错，避免静默丢表。
+        """
+        want = list(self.config["profiles"][self.config["default_profile"]]["sheet_order"])
+        actual = [w.title for w in wb.worksheets]
+        missing = [n for n in actual if n not in want]
+        if missing:
+            raise ValueError("【输出】工作表 %s 未登记在配置 sheet_order=%s 中" % (missing, want))
+        # openpyxl 无公开的重排 API，直接重排内部列表（社区通用做法）
+        wb._sheets = [wb[name] for name in want if name in actual]
+
     def render_export_excel(self, output_file_path: str, only_sheets=None):
         """
         统一输出入口：
         1) 沿用源 workbook，仅把源工作表改名为「原始数据」——值 / 行列顺序 / 数字格式零改动；
-        2) 依次生成 任务1 → 任务2 → 任务3 → 统计总览（保证统计总览排最后）；
-        3) 保存后注入公式缓存值，并把运行事实写入 self.report（由 run_skill.py 落盘）。
+        2) 依次生成 任务1 → 任务2 → 任务3 四维度 → 统计总览（构建顺序不影响交付顺序）；
+        3) 按配置 `sheet_order` 重排为交付顺序（题目正文：统计总览第 4 位）；
+        4) 保存后注入公式缓存值，并把运行事实写入 self.report（由 run_skill.py 落盘）。
 
         :param only_sheets: 只导出指定工作表（列表）——用于“单独出一个表”的场景。
             被保留的表若在公式里引用了别的表，那些表会**自动一并导出**（否则公式全成
@@ -620,6 +637,9 @@ class GeneralStatSkillEngine:
             expected = {k: v for k, v in self.expected.items() if k in keep}
         else:
             expected = self.expected
+
+        # 交付顺序由配置决定（单一事实源）——构建顺序无关紧要
+        self._apply_sheet_order(wb)
 
         try:
             wb.save(output_file_path)
