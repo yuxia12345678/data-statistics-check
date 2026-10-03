@@ -37,7 +37,8 @@ from excel_styler import apply_sheet_format
 from formula_builder import (
     build_sumifs_formula, build_countifs_formula,
     build_sumproud_distinct_contract_formula, build_divide_formula,
-    build_divide_by_global_formula, build_index_first_non_null,
+    build_divide_by_global_formula, build_divide_by_cells_diff_formula,
+    build_index_first_non_null,
     build_seq_formula, build_sum_all_formula, build_counta_formula,
     build_distinct_all_formula, build_distinct_nonblank_all_formula,
 )
@@ -280,6 +281,32 @@ class GeneralStatSkillEngine:
 
     # ============================================================ 任务2
 
+    def _resolve_ratio_denominator(self, den_cfg):
+        """
+        解析任务2「占比」的分母：统计总览两个指标格之差，及其 pandas 期望值。
+
+        配置来源：`task2_special_agg.ratio_denominator`
+            {"sheet_name": "统计总览", "value_column": "B",
+             "minuend_field": "总合同金额（万元）", "subtrahend_field": "总回款合计（万元）"}
+
+        被引用的两格本身都是引用「原始数据」的 SUM 公式，整条依赖链仍是动态公式。
+        返回 `(minuend_cell, subtrahend_cell, expected_value)`。
+        """
+        ov_sheet = self.t3_cfg["overview_sheet_name"]
+        value_col = den_cfg.get("value_column", "B")
+        metrics = self.t3_cfg["overview_metrics"]
+        names = [m["output_field"] for m in metrics]
+        cells, values = [], []
+        for key in ("minuend_field", "subtrahend_field"):
+            name = den_cfg[key]
+            if name not in names:
+                raise ValueError("【Task2】统计总览中不存在指标：%s" % name)
+            idx = names.index(name)
+            cells.append("%s!$%s$%d" % (ov_sheet, value_col, self.first_row + idx))
+            src = metrics[idx].get("source_field", "")
+            values.append(float(AGG_SUM(self.df_raw[src])) if src else 0.0)
+        return cells[0], cells[1], values[0] - values[1]
+
     def run_task2_formula_build(self, wb, field_to_col: dict):
         """任务2：未回款原因分类汇总。空的分类不视为一个分类；开启分类条件格式。"""
         ws = wb.create_sheet(title=self.t2_cfg["sheet_name"])
@@ -295,8 +322,9 @@ class GeneralStatSkillEngine:
         pk_field = self.t2_cfg["contract_key"]
         pk_col = self._col(pk_field)
         amount_field = self.t2_cfg["amount_field"]
-        amount_col = self._col(amount_field)
-        total_unpaid = float(self.df_raw[amount_field].sum())
+        # 「占比」分母 = 统计总览的「总合同金额」-「总回款合计」（配置驱动 + pandas 期望值）
+        den_minuend, den_subtrahend, den_value = self._resolve_ratio_denominator(
+            self.t2_cfg["ratio_denominator"])
 
         group_val_list = self.get_sorted_dim_list(group_field, self.t2_cfg["sort_by_field"])
         grouped = self.df_raw.groupby(group_field, sort=False)
@@ -330,14 +358,15 @@ class GeneralStatSkillEngine:
                               int(len(g)))
                 else:
                     raise ValueError("【Task2】不支持的聚合策略：%s" % agg_type)
-            # 占比 = 本类开票未回款 / 全局开票未回款（题目正文口径）
+            # 占比 = 本类开票未回款 / (统计总览的「总合同金额」-「总回款合计」)
+            # 分母口径由配置 task2_special_agg.ratio_denominator 驱动
             ratio_col = len(header_list)
             unpaid = float(AGG_SUM(g[amount_field]))
             self._put(ws, row, ratio_col,
-                      build_divide_by_global_formula(
-                          "%s%d" % (get_column_letter(3), row), amount_col,
-                          first_row=self.first_row, last_row=self.last_row),
-                      (unpaid / total_unpaid) if total_unpaid else None)
+                      build_divide_by_cells_diff_formula(
+                          "%s%d" % (get_column_letter(3), row),
+                          den_minuend, den_subtrahend),
+                      (unpaid / den_value) if den_value else None)
 
         apply_sheet_format(
             ws, self.style_cfg,

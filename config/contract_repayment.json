@@ -168,6 +168,12 @@
         "sort_by_field": "开票未回款",
         "target_sum_field": "开票未回款",
         "ratio_field_name": "占比",
+        "ratio_denominator": {
+            "sheet_name": "统计总览",
+            "value_column": "B",
+            "minuend_field": "总合同金额（万元）",
+            "subtrahend_field": "总回款合计（万元）"
+        },
         "metrics": {
             "开票未回款": [
                 "开票未回款",

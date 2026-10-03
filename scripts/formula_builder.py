@@ -114,6 +114,23 @@ def build_divide_by_global_formula(num_cell: str, den_col: str, source_sheet: st
     return '=IF(%s=0,"",%s/%s)' % (s, num_cell, s)
 
 
+def build_divide_by_cells_diff_formula(num_cell: str, minuend_cell: str,
+                                       subtrahend_cell: str) -> str:
+    """
+    本行数值 / (另外两个"派生格"之差)。用于「未回款原因分类汇总」的占比：
+
+        分母 = 统计总览的「总合同金额」-「总回款合计」
+
+    形如：`=IF((统计总览!$B$3-统计总览!$B$5)=0,"",C3/(统计总览!$B$3-统计总览!$B$5))`
+
+    被引用的两格本身是引用「原始数据」的 SUM 公式，故整条依赖链仍是动态公式
+    （`verify.py` 的 R3c 允许"跨表引用派生公式格"这一形态）。
+    分母为 0 时输出空值，避免 `#DIV/0!`。
+    """
+    den = "(%s-%s)" % (minuend_cell, subtrahend_cell)
+    return '=IF(%s=0,"",%s/%s)' % (den, num_cell, den)
+
+
 # ---------------------------------------------------------------- 序号 / 取首条非空
 
 def build_seq_formula(offset: int = 2) -> str:

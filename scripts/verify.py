@@ -25,7 +25,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, column_index_from_string
 
 
 # ================================================================ 配置（唯一事实源）
@@ -72,6 +72,11 @@ class _Config:
                               if r["agg_strategy"] == "distinct_join"), "；")
         self.OVERVIEW_LABELS = [m["output_field"] for m in t3["overview_metrics"]]
         self.FIELD_KIND = dict(cfg["field_kind"])
+        # 任务2「占比」分母定义（= 统计总览两个指标之差）及其"指标名 → 源字段"映射。
+        # 与生成侧 stat_engine._resolve_ratio_denominator 共用同一份配置。
+        self.T2_RATIO_DENOM = dict(cfg["task2_special_agg"].get("ratio_denominator") or {})
+        self.OVERVIEW_SOURCE = {m["output_field"]: m.get("source_field", "")
+                                for m in t3["overview_metrics"]}
 
         # ---- 样式常量（全部取自 style_setting）
         self.TITLE_FILL = style["title_bg_color"]
@@ -428,14 +433,46 @@ class Checker(object):
         self.add("R3b", "公式单元格均带缓存值（程序化读取不为空）", not no_cache,
                  "缺缓存 %d 处 %s" % (len(no_cache), no_cache[:6]))
         ok = self._all_formulas_reference_raw(stat_sheets)
-        self.add("R3c", "公式全部动态引用「原始数据」区间（或引用同表公式格派生）",
+        self.add("R3c", "公式全部动态引用「原始数据」区间（或引用同表/跨表数据源派生的公式格）",
                  ok, "存在未引用数据源的公式：%s" % (getattr(self, "_bad_formula", None),))
 
-    # 不含数据源引用的公式，只允许两种形态：
+    # 不含数据源直接引用的公式，允许三种形态：
     #   1) 行号序号          ROW()-2
     #   2) 同表派生比率       IF(C3=0,"",E3/C3)  ← 分子分母本身都是引用数据源的公式格
+    #   3) 跨表派生引用       引用"统计总览"的公式格（该格本身 = SUM('原始数据'!...)）
     LOCAL_OK = (re.compile(r"^ROW\(\)-\d+$"),
                 re.compile(r'^IF\(\$?[A-Z]{1,3}\$?\d+=0,"",\$?[A-Z]{1,3}\$?\d+/\$?[A-Z]{1,3}\$?\d+\)$'))
+
+    # 跨表单元格引用：'表名'!$B$3 或 表名!$B$3
+    _SHEET_REF = re.compile(r"(?:'([^']+)'|([A-Za-z0-9_\u4e00-\u9fff]+))!\$?([A-Z]{1,3})\$?(\d+)")
+
+    def _refs_are_derived(self, body):
+        """
+        形态 3 的判定：公式里**每个跨表引用**指向的单元格，本身必须是引用「原始数据」的
+        公式格（派生链仍源于数据源）；且除 0 外不得出现数字字面量（防硬编码）。
+
+        例（任务2 占比分母）：
+            =IF((统计总览!$B$3-统计总览!$B$5)=0,"",C3/(统计总览!$B$3-统计总览!$B$5))
+        其中 统计总览!B3 = SUM('原始数据'!$F$3:$F$1002)、B5 = SUM('原始数据'!$J$3:$J$1002)。
+        """
+        refs = self._SHEET_REF.findall(body)
+        if not refs:
+            return False
+        for quoted, plain, col, row in refs:
+            sheet = quoted or plain
+            if sheet not in self.wbf.sheetnames:
+                return False
+            target = self.wbf[sheet].cell(int(row), column_index_from_string(col)).value
+            if not (isinstance(target, str) and target.startswith("=")):
+                return False
+            tb = target[1:]
+            if "原始数据" not in tb and not any(p.match(tb) for p in self.LOCAL_OK):
+                return False
+        # 剔除字符串、跨表引用、同表引用后，若仍残留 1-9 的数字字面量 → 视为硬编码
+        residue = re.sub(r'"[^"]*"', "", body)
+        residue = self._SHEET_REF.sub("", residue)
+        residue = re.sub(r"\$?[A-Z]{1,3}\$?\d+", "", residue)
+        return not re.search(r"[1-9]", residue)
 
     def _all_formulas_reference_raw(self, stat_sheets):
         for name in stat_sheets:
@@ -448,9 +485,12 @@ class Checker(object):
                     body = v[1:]
                     if "原始数据" in body:
                         continue
-                    if not any(p.match(body) for p in self.LOCAL_OK):
-                        self._bad_formula = (name, cell.coordinate, body[:60])
-                        return False
+                    if any(p.match(body) for p in self.LOCAL_OK):
+                        continue
+                    if self._refs_are_derived(body):
+                        continue
+                    self._bad_formula = (name, cell.coordinate, body[:60])
+                    return False
         return True
 
     # ---------- R4 公式错误
@@ -564,7 +604,12 @@ class Checker(object):
         # 原因表
         ws = self.wbv[C.SHEET_REASON]
         bad = []
-        total_unpaid = f["totals"]["开票未回款"]
+        # 占比分母 = 统计总览的「总合同金额」-「总回款合计」
+        # （口径来自配置 task2_special_agg.ratio_denominator，源字段经 overview_metrics 映射）
+        _dn = C.T2_RATIO_DENOM
+        _minuend = f["totals"].get(C.OVERVIEW_SOURCE.get(_dn.get("minuend_field", ""), ""), 0.0)
+        _subtrahend = f["totals"].get(C.OVERVIEW_SOURCE.get(_dn.get("subtrahend_field", ""), ""), 0.0)
+        reason_denom = _minuend - _subtrahend
         for r in range(3, ws.max_row + 1):
             k = str(ws.cell(r, 2).value).strip()
             d = f["reasons"].get(k)
@@ -572,11 +617,11 @@ class Checker(object):
                 bad.append((r, k, "源中无此分类"))
                 continue
             for col, e in ((3, d["unpaid"]), (4, len(d["codes"])), (5, d["rows"]),
-                           (6, d["unpaid"] / total_unpaid if total_unpaid else None)):
+                           (6, d["unpaid"] / reason_denom if reason_denom else None)):
                 if not close(ws.cell(r, col).value, e):
                     bad.append((r, k, col, ws.cell(r, col).value, e))
-        self.add("R6-原因", "未回款原因分类汇总 4 项指标与源事实一致", not bad,
-                 "差异 %s（源字段全空时本项为空表，自动通过）" % bad[:5])
+        self.add("R6-原因", "未回款原因分类汇总 4 项指标与源事实一致（占比分母 = 总合同金额-总回款合计）",
+                 not bad, "差异 %s（源字段全空时本项为空表，自动通过）" % bad[:5])
 
     # ---------- R7 排序
     def r7_order(self):
