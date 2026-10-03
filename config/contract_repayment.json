@@ -57,6 +57,10 @@
             "部门",
             "账龄",
             "未回款原因分类"
+        ],
+        "text_fields": [
+            "合同号",
+            "责任人"
         ]
     },
     "task1_group_merge": {
@@ -137,6 +141,10 @@
             "部门",
             "账龄",
             "未回款原因分类"
+        ],
+        "text_fields": [
+            "合同号",
+            "责任人"
         ]
     },
     "task2_special_agg": {
@@ -178,7 +186,8 @@
         ],
         "cat_fields": [
             "未回款原因分类"
-        ]
+        ],
+        "text_fields": []
     },
     "task3_multi_dim": {
         "overview_sheet_name": "统计总览",
@@ -252,6 +261,7 @@
             "未回款占比"
         ],
         "cat_fields": [],
+        "text_fields": [],
         "overview_metrics": [
             {
                 "output_field": "总合同金额（万元）",

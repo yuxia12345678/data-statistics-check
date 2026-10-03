@@ -18,6 +18,8 @@ from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.utils import get_column_letter
 
+from config_validator import validate_sheet_field_kinds
+
 
 def build_excel_style_from_config(style_cfg: dict):
     """读取配置构建可复用openpyxl样式对象"""
@@ -180,6 +182,53 @@ def auto_fit_column_width(ws: Worksheet, style_cfg: dict = None, display_lookup:
         ws.column_dimensions[col_letter].width = max(lo, min(hi, float(w)))
 
 
+def _looks_numeric(value) -> bool:
+    """判断值是否“看起来是数值”：数字本身，或能被 float() 解析的字符串。"""
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        t = value.strip()
+        if not t:
+            return False
+        try:
+            float(t)
+            return True
+        except ValueError:
+            return False
+    return False
+
+
+def detect_numeric_text_columns(ws: Worksheet, header_row_idx: int, name2idx: dict,
+                                text_names: list, min_samples: int = 3,
+                                numeric_ratio: float = 0.8) -> list:
+    """
+    找出「登记为文本字段、但数据几乎全是数值」的列，供告警使用（不阻断生成）。
+
+    这类列通常是**类型登记错了**：本该是数值列（右对齐 + 金额/百分比格式），
+    却被放进了 text_fields，于是左对齐且不设数字格式。
+
+    :return: [(表头, 列号, 数值占比), ...]
+    """
+    found = []
+    if not text_names:
+        return found
+    for name in text_names:
+        c_idx = name2idx.get(name)
+        if not c_idx:
+            continue
+        vals = [ws.cell(r, c_idx).value for r in range(header_row_idx + 1, ws.max_row + 1)]
+        vals = [v for v in vals if v not in (None, "")]
+        if len(vals) < min_samples:
+            continue
+        hit = sum(1 for v in vals if _looks_numeric(v))
+        ratio = hit / float(len(vals))
+        if ratio >= numeric_ratio:
+            found.append((name, c_idx, ratio))
+    return found
+
+
 # def apply_sheet_format(ws: Worksheet, style_cfg: dict,
 #                        num_cols: list, pct_cols: list, date_cols: list, cat_cols: list,
 #                        header_row_idx: int = 2, enable_cat_cond_format: bool = False, cat_field_name: str = "",
@@ -188,6 +237,7 @@ def apply_sheet_format(ws: Worksheet, style_cfg: dict,
                        num_cols: list, pct_cols: list, date_cols: list, cat_cols: list,
                        header_row_idx: int = 2, enable_cat_cond_format: bool = False, cat_field_name: str = "",
                        sheet_title: str = None, total_title_cols: int = 0, int_cols: list = None,
+                       text_cols: list = None,
                        set_number_format: bool = True, display_values: dict = None):
     """
     对工作表执行全套美化
@@ -202,6 +252,7 @@ def apply_sheet_format(ws: Worksheet, style_cfg: dict,
     :param cat_field_name:条件格式绑定的分类字段名称
     :param sheet_title:大标题文本，不为空则设置A1合并标题
     :param total_title_cols:标题合并总列数
+    :param text_cols:文本字段名列表（显式左对齐）；所有列都必须在类型清单中登记
     :param display_values:公式格的缓存值 {坐标: 值}；列宽按"显示内容"估算时使用，
                           不传则公式格不参与列宽计算（只按表头与文本格估宽）
     """
@@ -228,6 +279,16 @@ def apply_sheet_format(ws: Worksheet, style_cfg: dict,
     for idx, n in enumerate(header_names_raw):
         if n is not None:
             name2idx[n] = idx + 1
+
+    # 字段类型清单：每一列都必须显式登记；有未登记的表头直接报错，
+    # 避免新增列被静默地兜底成文本（左对齐、不设数字格式）。
+    int_cols = int_cols or []
+    text_cols = text_cols or []
+    validate_sheet_field_kinds(
+        ws.title, list(name2idx.keys()),
+        {"num_fields": num_cols, "int_fields": int_cols, "pct_fields": pct_cols,
+         "date_fields": date_cols, "cat_fields": cat_cols, "text_fields": text_cols},
+    )
 
     # 设置表头样式：蓝色底色，白色加粗，水平居中
     # for cell in ws[header_row_idx]:
@@ -294,6 +355,8 @@ def apply_sheet_format(ws: Worksheet, style_cfg: dict,
                     cell.number_format = style_cfg.get("date_number_format", "@")
             elif col_name in cat_cols:
                 cell.alignment = Alignment(horizontal="center", vertical="center")
+            elif col_name in text_cols:
+                cell.alignment = Alignment(horizontal="left", vertical="center")
             else:
                 cell.alignment = Alignment(horizontal="left", vertical="center")
 
@@ -301,5 +364,12 @@ def apply_sheet_format(ws: Worksheet, style_cfg: dict,
     if enable_cat_cond_format and cat_field_name in name2idx:
         cat_col = name2idx[cat_field_name]
         add_category_conditional_format(ws, cat_col, start_row=header_row_idx + 1)
+
+    # 告警：被登记为文本字段、但数据几乎全是数值的列（很可能是类型登记错了）。
+    # 只提示不阻断——真正的"未登记列"已在上面 validate_sheet_field_kinds 直接报错。
+    for _name, _col, _ratio in detect_numeric_text_columns(ws, header_row_idx, name2idx, text_cols):
+        print("⚠️ [对齐告警]「%s」%s 列被登记为文本字段，但 %.0f%% 的数据是数值；"
+              "如确为数值请移入 num_fields（右对齐 + 数字格式）"
+              % (ws.title, get_column_letter(_col), _ratio * 100))
 
     auto_fit_column_width(ws, style_cfg, display_values)

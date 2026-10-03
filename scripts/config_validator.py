@@ -74,3 +74,44 @@ def validate_business_config(cfg: Dict[str, Any]) -> None:
         raise ValueError(
             f"工作表名称错误！期望:{expect_sheet_set}\n实际:{actual_sheet_set}，名字、文字、大小写必须完全一致"
         )
+
+
+# ================================================================ 字段类型清单校验
+
+# 驱动对齐与数字格式的字段类型清单键（与 excel_styler.apply_sheet_format 一一对应）
+FIELD_KIND_KEYS = [
+    "num_fields", "int_fields", "pct_fields", "date_fields", "cat_fields", "text_fields"
+]
+
+
+def validate_sheet_field_kinds(sheet_name: str,
+                               headers,
+                               kind_lists: Dict[str, Any],
+                               kind_keys=None) -> None:
+    """
+    校验一张工作表的**表头是否全部登记了字段类型**。
+
+    对齐规则（文本左 / 数值右 / 日期与分类居中）与数字格式都由这些清单驱动：
+    num_fields / int_fields / pct_fields / date_fields / cat_fields / text_fields。
+
+    若有表头既不在上述任何清单中，说明该列类型未登记——它会被静默地兜底成文本
+    （左对齐、不设数字格式），很可能不是预期结果。因此这里**直接抛 ValueError**，
+    强制配置方显式登记每一列。
+
+    :param sheet_name: 工作表名（仅用于错误信息）
+    :param headers:    表头名称序列（None / 空字符串会被忽略）
+    :param kind_lists: 形如 {"num_fields": [...], "text_fields": [...], ...}
+    :param kind_keys:  要检查的清单键；默认 FIELD_KIND_KEYS
+    :return: 无返回；存在未登记表头时抛 ValueError
+    """
+    keys = list(kind_keys) if kind_keys else list(FIELD_KIND_KEYS)
+    classified = set()
+    for k in keys:
+        classified.update(kind_lists.get(k) or [])
+    unknown = [h for h in headers if h not in (None, "") and h not in classified]
+    if unknown:
+        raise ValueError(
+            "工作表「%s」有表头未登记字段类型：%s\n"
+            "请在配置的 %s 中登记这些列（纯文本列请放入 text_fields）。"
+            % (sheet_name, unknown, " / ".join(keys))
+        )

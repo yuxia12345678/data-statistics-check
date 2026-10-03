@@ -17,7 +17,7 @@
 两个 profile：
   - `spec`    （默认）以《题目描述》正文为评分规范；
   - `example` 以《附件2-示例》形态为准（金额 2 位小数、四边框、日期右对齐、
-              分类左对齐、统计总览排最后、「原始数据」第 1 行覆盖为大标题）。
+              分类左对齐、「原始数据」第 1 行覆盖为大标题）。
 """
 
 import copy
@@ -184,9 +184,10 @@ _DIM_HEADERS_EXAMPLE = [
     "开票未回款", "合同数", "回款率", "未回款占比",
 ]
 
+# 统计总览排最后（2026-10-03 由第 4 位改为最后，与示例一致）
 _SHEET_ORDER_SPEC = [
-    SHEET_RAW, SHEET_MERGE, SHEET_REASON, SHEET_OVERVIEW,
-    "区域统计", "部门统计", "账龄统计", "客户分类统计",
+    SHEET_RAW, SHEET_MERGE, SHEET_REASON,
+    "区域统计", "部门统计", "账龄统计", "客户分类统计", SHEET_OVERVIEW,
 ]
 _SHEET_ORDER_EXAMPLE = [
     SHEET_RAW, SHEET_MERGE, SHEET_REASON,

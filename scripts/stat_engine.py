@@ -8,8 +8,8 @@ Skill 主业务引擎 stat_engine（配置驱动版）
 本次修正（对齐题目规范）：
 1. **「原始数据」零改动**：不再插入大标题行、不再删除「单位」行；值 / 行列顺序 /
    数字格式逐格保持源文件原样，仅叠加表头样式、斑马纹、水平边框、对齐、列宽、冻结；
-2. **表顺序**：统计总览排第 4 位
-   （原始数据 / 同合同号合并汇总 / 未回款原因分类汇总 / 统计总览 / 4 个维度表）；
+2. **表顺序**：统计总览排最后
+   （原始数据 / 同合同号合并汇总 / 未回款原因分类汇总 / 4 个维度表 / 统计总览）；
 3. **序号公式化**：所有序号列写入 `=ROW()-2`，不再是字面量整数；
 4. **合并表排序**：按合同号升序（从小到大）；
 5. **合同数口径**：组内**不同合同号**个数（SUMPRODUCT 去重计数）；修正原先
@@ -248,6 +248,7 @@ class GeneralStatSkillEngine:
             date_cols=self.t1_cfg["date_fields"],
             cat_cols=self.t1_cfg["cat_fields"],
             int_cols=self.t1_cfg.get("int_fields", []),
+            text_cols=self.t1_cfg.get("text_fields", []),
             header_row_idx=2,
             sheet_title=self.sheet_title_cfg["task1_result"],
             total_title_cols=len(header_list),
@@ -323,6 +324,7 @@ class GeneralStatSkillEngine:
             date_cols=[],
             cat_cols=self.t2_cfg["cat_fields"],
             int_cols=self.t2_cfg.get("int_fields", []),
+            text_cols=self.t2_cfg.get("text_fields", []),
             header_row_idx=2,
             enable_cat_cond_format=True,
             cat_field_name=group_field,
@@ -332,7 +334,7 @@ class GeneralStatSkillEngine:
         )
         return ws
 
-    # ============================================================ 统计总览（第 4 张）
+    # ============================================================ 统计总览（最后一张）
 
     def run_overview_formula_build(self, wb, field_to_col: dict):
         """统计总览：8 项全局指标，全部动态公式；数字格式按操作类型决定。"""
@@ -398,17 +400,14 @@ class GeneralStatSkillEngine:
 
         apply_sheet_format(
             ws, self.style_cfg,
-            num_cols=[], pct_cols=[], int_cols=[], date_cols=[], cat_cols=[],
+            num_cols=["数值"], pct_cols=[], int_cols=[], date_cols=[], cat_cols=[],
+            text_cols=["指标"],
             header_row_idx=2,
             sheet_title=self.sheet_title_cfg["overview"],
             total_title_cols=2,
+            set_number_format=False,   # 逐项金额/百分比格式已在上面设好，不能被覆盖
             display_values=self.expected.get(ws.title),
         )
-        # 纵向表逐行设对齐（数字格式已在上方设定；apply_sheet_format 不含该两列的类型，不会覆盖格式）
-        for i in range(len(row_formats)):
-            r = self.first_row + i
-            ws.cell(r, 1).alignment = Alignment(horizontal="left", vertical="center")
-            ws.cell(r, 2).alignment = Alignment(horizontal="right", vertical="center")
         return ws
 
     # ============================================================ 任务3
@@ -495,6 +494,7 @@ class GeneralStatSkillEngine:
                 date_cols=[],
                 cat_cols=[dim_field],
                 int_cols=t3.get("int_fields", []),
+                text_cols=t3.get("text_fields", []),
                 header_row_idx=2,
                 sheet_title="%s%s" % (dim_field, self.sheet_title_cfg["dim_suffix"]),
                 total_title_cols=len(header),
@@ -507,7 +507,7 @@ class GeneralStatSkillEngine:
         """
         统一输出入口：
         1) 沿用源 workbook，仅把源工作表改名为「原始数据」——值 / 行列顺序 / 数字格式零改动；
-        2) 依次生成 任务1 → 任务2 → 统计总览 → 任务3（保证工作表顺序）；
+        2) 依次生成 任务1 → 任务2 → 任务3 → 统计总览（保证统计总览排最后）；
         3) 保存后注入公式缓存值，并把运行事实写入 self.report（由 run_skill.py 落盘）。
         """
         t0 = time.time()
@@ -535,6 +535,7 @@ class GeneralStatSkillEngine:
             date_cols=raw_fmt.get("date_fields", self.t1_cfg["date_fields"]),
             cat_cols=raw_fmt.get("cat_fields", self.t1_cfg["cat_fields"]),
             int_cols=raw_fmt.get("int_fields", []),
+            text_cols=raw_fmt.get("text_fields", []),
             header_row_idx=header_row,
             sheet_title=None,            # 保留源第 1 行「单位：万元」，不覆盖为大标题
             total_title_cols=raw_cols,
@@ -544,8 +545,8 @@ class GeneralStatSkillEngine:
 
         self.run_task1_formula_build(wb, field_to_col)
         self.run_task2_formula_build(wb, field_to_col)
-        self.run_overview_formula_build(wb, field_to_col)
         self.run_task3_multi_dim_formula_build(wb, field_to_col)
+        self.run_overview_formula_build(wb, field_to_col)
 
         try:
             wb.save(output_file_path)
