@@ -28,7 +28,7 @@ data-statistics-check/
 │   ├── 样式规范.md
 │   ├── 与示例文件的差异.md
 │   └── 构建过程文档.md
-└── scripts/                    # 9 个文件，全部为执行路径所需
+└── scripts/                    # 8 个文件，全部为执行路径所需
     ├── run_skill.py            # 入口：--config <json> --input <xlsx> [--output-dir <dir>]
     ├── stat_engine.py          # 引擎内核：按 JSON 配置构建 8 张工作表
     ├── formula_builder.py      # Excel 公式生成器（限定数据区间）
@@ -36,13 +36,13 @@ data-statistics-check/
     ├── config_validator.py     # 配置 schema 校验（含 8 张表名严格匹配）
     ├── agg_strategy.py         # 通用聚合策略注册表（sum / nunique / …）
     ├── cached_values.py        # 公式缓存值 XML 注入（由 stat_engine 调用）
-    ├── verify.py               # 交付前自检 44 条断言，退出码 0 才可交付
-    └── config.py               # verify.py 的期望值/样式常量来源（唯一事实源）
+    └── verify.py               # 交付前自检 44 条断言，退出码 0 才可交付
 ```
 
 > **只有一套执行链**：`run_skill.py → stat_engine.py`，产物由 `verify.py` 44 项断言把关。
-> 规则与样式常量分两处：**产物生成**看 `config/contract_repayment.json`，
-> **产物校验**看 `scripts/config.py`；改口径只改前者。
+> **唯一事实源 = `config/contract_repayment.json`**：业务规则、样式参数，以及自检期望值
+> （字段类型表 `field_kind` / sheet 顺序 / 数字格式 / `spec`·`example` profile）全部在同一份 JSON；
+> 改口径或改样式**只改这一处**，生成与校验同步生效。
 > `__pycache__/` 属自动生成可随时删除；`_recovery/` 是历史快照（含已下线的 analyze 链路），确认后可删。
 
 ## 一、输入
@@ -101,8 +101,9 @@ python3 scripts/verify.py \
 - **Python 3.11**；装依赖：`pip install -r requirements.txt`
 - 依赖三项：`openpyxl`（建表 / 美化）、`pandas`（分组聚合与排序键）、`numpy`（pandas 依赖）
 - Windows 下用 `python`（而非 `python3`）调用；以下命令示例中的 `python3` 同理替换
-- `scripts/config.py` 是 `verify.py` 的期望值与样式常量来源；该文件缺失时自检会以
-  `ModuleNotFoundError: config` 直接失败，**不得**用内联常量绕过
+- `verify.py` 的期望值与样式常量**不再有独立的常量文件**，而是从 `config/contract_repayment.json`
+  现场派生（默认路径按脚本位置解析，可用 `--config` 指定其它 JSON）。
+  因此改口径 / 改样式**只需改该 JSON**，不要另外维护第二份常量
 
 ## 三、硬性规则（违反即扣分，不得变通）
 
@@ -183,7 +184,8 @@ python3 scripts/verify.py \
 | 现象 | 原因与处理 |
 |---|---|
 | `ModuleNotFoundError: openpyxl` / `pandas` | 未按 `requirements.txt` 安装依赖，执行 `pip install -r requirements.txt` |
-| `ModuleNotFoundError: config` | `scripts/config.py` 缺失。它是 `verify.py` 的期望值与样式常量来源；不要改成内联常量，否则 R9/R10/R11/R13/R14/R15 的样式断言失去单一事实源 |
+| 自检报找不到 `contract_repayment.json` | `verify.py` 默认读 `config/contract_repayment.json`（与生成侧同一份）；用 `--config` 指定其它路径 |
+| 自检 R8–R16 报样式不合规 | 期望值来自 `config/contract_repayment.json`；改样式后请确认改的是这份 JSON，勿另写内联常量 |
 | 程序读取结果文件时统计值全是 `None` | 缓存值未注入。`stat_engine.py` 保存后会调用 `cached_values.py` 写入 `<v>`；用其他脚本另存同一工作簿会丢缓存，R3b 会失败 |
 | 出现 `#DIV/0!` | 分母（合同金额或全局合计）为 0。公式已用 `IF(分母=0,"",…)` 防护；若仍出现请回源检查该组数据 |
 | 「开票日期」显示 `#VALUE!` | 该列被当成日期序列值处理了。本 Skill 保持源文本 `yyyymmdd` + `@` 格式，请勿改成 `datetime` |

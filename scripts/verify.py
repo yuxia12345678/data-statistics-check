@@ -4,7 +4,8 @@
 
 用法：
     python3 verify.py --file 结果.xlsx --source 附件1-合同开票及回款核对表.xlsx
-    可选： --profile spec|example   --json report.json
+    可选： --config config/contract_repayment.json
+           --profile spec|example   --json report.json
 
 设计原则：
   - 所有期望值都从"源文件"重新算一遍，再与结果文件的缓存值对照，
@@ -15,6 +16,7 @@
 
 import argparse
 import collections
+import copy
 import json
 import re
 import os
@@ -25,7 +27,76 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-import config as C
+
+# ================================================================ 配置（唯一事实源）
+# 产物生成与交付前自检共用同一份业务配置：config/contract_repayment.json。
+# 本文件不再维护第二份常量，以下常量全部由该 JSON 派生，避免两份配置漂移。
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CONFIG_PATH = os.path.normpath(
+    os.path.join(_SCRIPT_DIR, "..", "config", "contract_repayment.json"))
+
+
+class _Config:
+    """`config/contract_repayment.json` 的只读常量视图（自检侧的唯一事实源）。"""
+
+    def __init__(self, path):
+        with open(path, "r", encoding="utf-8") as fh:
+            self.raw = json.load(fh)
+        cfg = self.raw
+        style = cfg["style_setting"]
+        names = cfg["output_sheet_names"]
+        titles = cfg["sheet_titles"]
+        t1 = cfg["task1_group_merge"]
+        t3 = cfg["task3_multi_dim"]
+
+        # ---- 工作表名、顺序与表头大标题
+        self.SHEET_RAW = names["raw_copy"]
+        self.SHEET_MERGE = names["task1_result"]
+        self.SHEET_REASON = names["task2"]
+        self.SHEET_OVERVIEW = names["overview"]
+        self.DIMENSIONS = [(d["sheet_name"], d["dimension_field"]) for d in t3["dim_list"]]
+        self.SHEET_TITLES = {
+            self.SHEET_RAW: titles["raw_copy"],
+            self.SHEET_MERGE: titles["task1_result"],
+            self.SHEET_REASON: titles["task2"],
+            self.SHEET_OVERVIEW: titles["overview"],
+        }
+        for _dim_sheet, _dim_field in self.DIMENSIONS:
+            self.SHEET_TITLES[_dim_sheet] = _dim_field + titles["dim_suffix"]
+
+        # ---- 字段口径
+        self.MERGE_SUM_FIELDS = [r["field_name"] for r in t1["agg_strategy_list"]
+                                 if r["agg_strategy"] == "sum"]
+        self.OVERVIEW_LABELS = [m["output_field"] for m in t3["overview_metrics"]]
+        self.FIELD_KIND = dict(cfg["field_kind"])
+
+        # ---- 样式常量（全部取自 style_setting）
+        self.TITLE_FILL = style["title_bg_color"]
+        self.HEADER_FILL = style["header_bg_color"]
+        self.HEADER_FONT_COLOR = style["header_font_color"]
+        self.ZEBRA_FILL = style["odd_row_bg"]
+        self.BORDER_COLOR = style["horizontal_border_color"]
+        self.PCT_FORMAT = style["percent_number_format"]
+        self.INT_FORMAT = style["int_number_format"]
+        self.DATE_FORMAT_SRC = style["date_number_format"]
+        self.COL_WIDTH_MIN = style["col_width_min"]
+        self.COL_WIDTH_MAX = style["col_width_max"]
+        self.FREEZE_PANES = style["freeze_panes"]
+
+        # ---- profile（期望值口径）
+        self.PROFILES = cfg["profiles"]
+        self.DEFAULT_PROFILE = cfg["default_profile"]
+
+    def get_profile(self, name=None):
+        """返回 profile 的深拷贝，调用方可安全修改。"""
+        key = name or self.DEFAULT_PROFILE
+        if key not in self.PROFILES:
+            raise ValueError("未知 profile：%s（可选 %s）"
+                             % (key, "、".join(sorted(self.PROFILES))))
+        return copy.deepcopy(self.PROFILES[key])
+
+
+C = None    # 由 main() 依据 --config 构建；其余函数在运行期引用
 
 TOL = 1e-6
 
@@ -577,9 +648,15 @@ def main():
     p = argparse.ArgumentParser(description="结果文件交付前自检")
     p.add_argument("--file", required=True, help="Skill 产出的结果 xlsx")
     p.add_argument("--source", required=True, help="原始输入 xlsx")
-    p.add_argument("--profile", default=C.DEFAULT_PROFILE, choices=sorted(C.PROFILES))
+    p.add_argument("--config", default=DEFAULT_CONFIG_PATH,
+                   help="业务配置 JSON（默认 config/contract_repayment.json）")
+    p.add_argument("--profile", default=None,
+                   help="期望值口径；不传则用配置里的 default_profile")
     p.add_argument("--json", default=None, help="把自检报告写成 JSON")
     args = p.parse_args()
+
+    global C
+    C = _Config(args.config)
 
     profile = C.get_profile(args.profile)
     ck = Checker(args.file, args.source, profile)

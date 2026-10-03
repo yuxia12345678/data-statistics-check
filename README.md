@@ -34,7 +34,7 @@ data-statistics-check/
 ├── 运行成果/                    # 结果 Excel + 运行回执.json + 自检报告.json
 ├── config/                     # 业务配置（contract_repayment.json）
 ├── references/                 # 口径与公式、样式、与示例的差异、构建过程
-└── scripts/                    # 9 个文件，全部为执行路径所需
+└── scripts/                    # 8 个文件，全部为执行路径所需
     ├── run_skill.py            # 入口（--config / --input / --output-dir）
     ├── stat_engine.py          # 引擎内核（按 JSON 建 8 张表）
     ├── formula_builder.py      # Excel 公式生成器
@@ -42,8 +42,7 @@ data-statistics-check/
     ├── config_validator.py     # 配置 schema 校验
     ├── agg_strategy.py         # 聚合策略注册表
     ├── cached_values.py        # 公式缓存值注入
-    ├── verify.py               # 交付前自检（44 条断言）
-    └── config.py               # verify.py 的期望值 / 样式常量来源
+    └── verify.py               # 交付前自检（44 条断言，读取同一份 JSON）
 ```
 
 ## 四、安装
@@ -125,7 +124,7 @@ Windows 下命令用 `python`。自检退出码 0 = 全部合规；1 = 有不合
 | 现象 | 原因与处理 |
 |---|---|
 | `ModuleNotFoundError: openpyxl` / `pandas` | 未装依赖，执行 `pip install -r requirements.txt` |
-| `ModuleNotFoundError: config` | `scripts/config.py` 缺失。它是 `verify.py` 的期望值与样式常量来源，必须存在 |
+| 自检报找不到 `contract_repayment.json` | `verify.py` 默认读 `config/contract_repayment.json`（与生成侧同一份）；用 `--config` 指定其它路径 |
 | 程序读取结果文件时统计值全是 `None` | 缓存值未注入；请使用本 Skill 的产物，`stat_engine.py` 会在保存后自动注入 |
 | 「开票日期」显示 `#VALUE!` | 该列被当成日期序列值了；必须保持文本 `yyyymmdd` + `@` |
 | 自检 R14 报「未设置列宽」 | 源文件自带的无表头「幽灵列」已在核验中排除；若有更多幽灵列，同步调整 `verify.py` 的有效列判定 |
@@ -135,9 +134,11 @@ Windows 下命令用 `python`。自检退出码 0 = 全部合规；1 = 有不合
 
 - 项目早期有**两套并行实现**：配置驱动引擎（`run_skill.py → stat_engine.py`）与一套
   `analyze.py` 链路。2026-10-03 配置驱动引擎重建到题目规范、并通过 44 项自检后，
-  `analyze.py` / `formulas.py` / `styling.py` **已下线**，`scripts/` 从 13 个文件精简到 9 个；
+  `analyze.py` / `formulas.py` / `styling.py` **已下线**，`scripts/` 从 13 个文件精简到 8 个；
   备份在 `_recovery/`。
-- `config.py` 与 `cached_values.py` **保留**：前者是 `verify.py` 的期望值来源，
-  后者被 `stat_engine.py` 调用，二者都不是死代码。
+- `cached_values.py` **保留**：被 `stat_engine.py` 调用，不是死代码。
+- `config.py` **已删除**（2026-10-03）：它原先保存 `verify.py` 的期望值与样式常量，与
+  `config/contract_repayment.json` 内容重复；现把常量（`field_kind` / `profiles`）并入该 JSON，
+  `verify.py` 从中直接派生，消除「两份配置漂移」的风险。
 - `init.py` 已删除：从未被引用，也不是包标记（Python 只认 `__init__.py`）。
 - 依赖由 `openpyxl` 扩为 `openpyxl + pandas + numpy`（引擎需要）。

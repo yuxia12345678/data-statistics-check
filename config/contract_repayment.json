@@ -20,7 +20,8 @@
         "overview_number_format": "#,##0.000",
         "col_width_min": 8,
         "col_width_max": 40,
-        "col_width_padding": 3
+        "col_width_padding": 3,
+        "freeze_panes": "A3"
     },
     "output_filename": "合同开票及回款核对表分析结果_1003测什么都对.xlsx",
     "output_sheet_names": {
@@ -321,5 +322,88 @@
         "overview_pct_fields": [
             "整体回款率"
         ]
+    },
+    "field_kind": {
+        "序号": "int",
+        "指标": "text",
+        "数值": "num",
+        "区域": "cat",
+        "客户分类": "cat",
+        "合同号": "text",
+        "开票日期": "date",
+        "合同金额": "money",
+        "合并开票金额": "money",
+        "未开票金额": "money",
+        "开票金额": "money",
+        "回款合计": "money",
+        "开票未回款": "money",
+        "部门": "cat",
+        "责任人": "text",
+        "账龄": "cat",
+        "未回款原因分类": "cat",
+        "总合同金额": "money",
+        "总开票金额": "money",
+        "总回款合计": "money",
+        "总开票未回款": "money",
+        "合同数": "int",
+        "整体回款率": "pct",
+        "未回款占比": "pct",
+        "回款率": "pct",
+        "涉及合同数": "int",
+        "涉及数据笔数": "int",
+        "占比": "pct"
+    },
+    "default_profile": "spec",
+    "profiles": {
+        "spec": {
+            "name": "spec",
+            "money_format": "#,##0.000",
+            "border_mode": "horizontal",
+            "align_by_kind": {
+                "text": "left", "num": "right", "money": "right",
+                "int": "right", "pct": "right", "date": "center", "cat": "center"
+            },
+            "merge_col_order": [
+                "序号", "区域", "客户分类", "合同号", "开票日期",
+                "合同金额", "未开票金额", "开票金额", "回款合计", "开票未回款",
+                "部门", "责任人", "账龄", "未回款原因分类"
+            ],
+            "dim_headers": [
+                "序号", "{dim}", "总合同金额", "总开票金额", "总回款合计",
+                "总开票未回款", "合同数", "整体回款率", "未回款占比"
+            ],
+            "sheet_order": [
+                "原始数据", "同合同号合并汇总", "未回款原因分类汇总",
+                "区域统计", "部门统计", "账龄统计", "客户分类统计", "统计总览"
+            ],
+            "raw_override_title_row": false,
+            "raw_preserve_strict": false,
+            "fill_blank_reason": false
+        },
+        "example": {
+            "name": "example",
+            "money_format": "#,##0.00",
+            "border_mode": "all",
+            "align_by_kind": {
+                "text": "left", "num": "right", "money": "right",
+                "int": "right", "pct": "right", "date": "right", "cat": "left"
+            },
+            "merge_col_order": [
+                "序号", "区域", "客户分类", "合同号", "开票日期",
+                "合同金额", "未开票金额", "开票金额", "回款合计", "开票未回款",
+                "部门", "责任人", "账龄", "未回款原因分类"
+            ],
+            "dim_headers": [
+                "序号", "{dim}", "合同金额", "开票金额", "回款合计",
+                "开票未回款", "合同数", "回款率", "未回款占比"
+            ],
+            "sheet_order": [
+                "原始数据", "同合同号合并汇总", "未回款原因分类汇总",
+                "区域统计", "部门统计", "账龄统计", "客户分类统计", "统计总览"
+            ],
+            "raw_override_title_row": true,
+            "raw_preserve_strict": false,
+            "fill_blank_reason": false
+        }
     }
 }
