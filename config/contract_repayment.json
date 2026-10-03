@@ -21,7 +21,18 @@
         "col_width_min": 8,
         "col_width_max": 40,
         "col_width_padding": 3,
-        "freeze_panes": "A3"
+        "freeze_panes": "A3",
+        "raw_beautify": false,
+        "reason_soft_colors": [
+            "FFFDE9D9",
+            "FFDCE6F1",
+            "FFEBF1DE",
+            "FFE4DFEC",
+            "FFF2DCDB",
+            "FFDAEEF3",
+            "FFFFF2CC",
+            "FFEAF1DD"
+        ]
     },
     "output_filename": "合同开票及回款核对表分析结果_1003测什么都对.xlsx",
     "output_sheet_names": {

@@ -82,6 +82,8 @@ class _Config:
         self.COL_WIDTH_MIN = style["col_width_min"]
         self.COL_WIDTH_MAX = style["col_width_max"]
         self.FREEZE_PANES = style["freeze_panes"]
+        # 「原始数据」是否叠加美化（false = 与源表逐格一致，样式类断言不适用于它）
+        self.raw_beautify = bool(style.get("raw_beautify", False))
 
         # ---- profile（期望值口径）
         self.PROFILES = cfg["profiles"]
@@ -214,6 +216,11 @@ def close(a, b):
 
 class Checker(object):
     def __init__(self, out_path, src_path, profile):
+        # 完整工作表顺序（R1 用）；样式类断言（R9–R15）在 raw_beautify=false 时
+        # 跳过「原始数据」——它与源表逐格一致，不参与统一美化。
+        self.sheet_order_all = list(profile["sheet_order"])
+        if not C.raw_beautify:
+            profile["sheet_order"] = [s for s in profile["sheet_order"] if s != C.SHEET_RAW]
         self.profile = profile
         self.wbf = load_workbook(out_path, data_only=False)
         self.wbv = load_workbook(out_path, data_only=True)
@@ -229,44 +236,82 @@ class Checker(object):
 
     # ---------- R1 工作表
     def r1_sheets(self):
-        want = self.profile["sheet_order"]
+        want = self.sheet_order_all
         got = self.wbf.sheetnames
         self.add("R1", "8 张工作表名称与顺序严格匹配", got == want,
                  "期望=%s 实际=%s" % (want, got))
 
     # ---------- R2 原始数据原样
     def r2_raw_intact(self):
+        """
+        「原始数据」= 源表 Sheet1 的原样副本（仅改名），因此**全表逐格**比对：
+        值、数字格式、填充/字体/边框/对齐、行数/列数、列宽、冻结窗格。
+        """
         ws = self.wbv[C.SHEET_RAW]
+        wsf = self.wbf[C.SHEET_RAW]
         src_ws = None
         for w in self.src_wb.worksheets:
             if w.sheet_state == "visible":
                 src_ws = w
                 break
-        diff_val, diff_nf, n = [], [], 0
-        col_of = self.srcf["col_of"]
-        for (r, c), (v, nf) in self.srcf["raw_cells"].items():
-            n += 1
-            gv = ws.cell(r, c).value
-            gnf = ws.cell(r, c).number_format
-            if isinstance(v, (int, float)) and isinstance(gv, (int, float)):
-                if not close(v, gv):
-                    diff_val.append((r, c, v, gv))
-            elif (v if v is not None else "") != (gv if gv is not None else ""):
-                diff_val.append((r, c, repr(v)[:40], repr(gv)[:40]))
-            if nf != gnf:
-                diff_nf.append((r, c, nf, gnf))
+
+        def _color(c):
+            try:
+                v = getattr(c, "rgb", None)
+                return v if isinstance(v, str) else None
+            except Exception:
+                return None
+
+        def cell_style(cell):
+            f, fill, b, a = cell.font, cell.fill, cell.border, cell.alignment
+            return ((fill.fill_type if fill else None,
+                     _color(fill.start_color) if fill else None),
+                    (f.bold, f.italic, f.size, f.name, _color(f.color)),
+                    (getattr(b.left, "style", None), getattr(b.right, "style", None),
+                     getattr(b.top, "style", None), getattr(b.bottom, "style", None)),
+                    (a.horizontal, a.vertical, a.wrap_text))
+
+        def width_of(sheet, idx):
+            return sheet.column_dimensions[get_column_letter(idx)].width
+
+        max_r = max(src_ws.max_row, ws.max_row)
+        max_c = max(src_ws.max_column, ws.max_column)
+        diff_val, diff_nf, diff_style, n = [], [], [], 0
+        for r in range(1, max_r + 1):
+            for c in range(1, max_c + 1):
+                n += 1
+                sc, gc = src_ws.cell(r, c), ws.cell(r, c)
+                v, gv = sc.value, gc.value
+                if isinstance(v, (int, float)) and isinstance(gv, (int, float)):
+                    if not close(v, gv):
+                        diff_val.append((r, c, v, gv))
+                elif (v if v is not None else "") != (gv if gv is not None else ""):
+                    diff_val.append((r, c, repr(v)[:40], repr(gv)[:40]))
+                if sc.number_format != gc.number_format:
+                    diff_nf.append((r, c, sc.number_format, gc.number_format))
+                if cell_style(sc) != cell_style(wsf.cell(r, c)):
+                    diff_style.append((r, c))
         self.add("R2a", "「原始数据」全部单元格值与源文件一致（含行列顺序）",
                  not diff_val, "比对 %d 格，差异 %d 处 %s" % (n, len(diff_val), diff_val[:5]))
-        self.add("R2b", "「原始数据」数字格式未被修改", not diff_nf,
-                 "差异 %d 处 %s" % (len(diff_nf), diff_nf[:5]))
+        self.add("R2b", "「原始数据」数字格式 + 填充/字体/边框/对齐 逐格未被修改",
+                 not diff_nf and not diff_style,
+                 "数字格式差异 %d 处 %s；样式差异 %d 处 %s"
+                 % (len(diff_nf), diff_nf[:3], len(diff_style), diff_style[:5]))
         hr = self.srcf["header_row"]
         heads_ok = all(ws.cell(hr, c).value == src_ws.cell(hr, c).value
-                       for c in range(1, max(col_of.values()) + 1))
+                       for c in range(1, max_c + 1))
         self.add("R2c", "「原始数据」表头文字与行位置未变", heads_ok,
                  "表头行=%d" % hr)
-        self.add("R2d", "「原始数据」行数与源一致（无增删行）",
-                 ws.max_row == src_ws.max_row,
-                 "源=%d 结果=%d" % (src_ws.max_row, ws.max_row))
+        wdiff = []
+        for c in range(1, max_c + 1):
+            if width_of(src_ws, c) != width_of(ws, c):
+                wdiff.append((get_column_letter(c), width_of(src_ws, c), width_of(ws, c)))
+        self.add("R2d", "「原始数据」行数/列数/列宽/冻结窗格与源一致",
+                 (src_ws.max_row == ws.max_row and src_ws.max_column == ws.max_column
+                  and not wdiff and src_ws.freeze_panes == ws.freeze_panes),
+                 "行 源=%d 结果=%d；列 源=%d 结果=%d；列宽差异 %d %s；冻结 源=%r 结果=%r"
+                 % (src_ws.max_row, ws.max_row, src_ws.max_column, ws.max_column,
+                    len(wdiff), wdiff[:5], src_ws.freeze_panes, ws.freeze_panes))
 
     # ---------- R3 禁止硬编码
     def r3_formulas(self):
@@ -332,15 +377,26 @@ class Checker(object):
 
     # ---------- R4 公式错误
     def r4_errors(self):
+        err_tokens = ("#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NULL!", "#NUM!")
+        # 空值残留：源表空单元格经 pandas 读入为 NaN，若判空失真会写出字面量 "nan"
+        miss_tokens = ("nan", "nat", "none", "inf", "-inf")
         found = []
+        leaked = []
         for name in self.wbv.sheetnames:
             ws = self.wbv[name]
             for row in ws.iter_rows():
                 for cell in row:
-                    if isinstance(cell.value, str) and cell.value in (
-                            "#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NULL!", "#NUM!"):
-                        found.append((name, cell.coordinate, cell.value))
-        self.add("R4", "无公式错误值", not found, "错误 %d 处 %s" % (len(found), found[:8]))
+                    v = cell.value
+                    if not isinstance(v, str):
+                        continue
+                    if v in err_tokens:
+                        found.append((name, cell.coordinate, v))
+                    elif any(tok.strip().lower() in miss_tokens for tok in v.split("、")):
+                        leaked.append((name, cell.coordinate, v))
+        ok = not found and not leaked
+        self.add("R4", "无公式错误值 / 无空值残留（nan·NaT 未被当成内容写入）", ok,
+                 "错误 %d 处 %s；空值残留 %d 处 %s"
+                 % (len(found), found[:4], len(leaked), leaked[:4]))
 
     # ---------- R5 行数
     def r5_rowcounts(self):
@@ -628,12 +684,26 @@ class Checker(object):
         ws = self.wbf[C.SHEET_REASON]
         rules = [r for rng in ws.conditional_formatting for r in rng.rules]
         n = len(self.srcf["reasons"])
+        # 柔和背景必须是**8 位不透明 ARGB**：6 位十六进制会被 openpyxl 补成 00RRGGBB，
+        # alpha=00 即透明 —— 条件格式形同失效（露出斑马纹底色），属缺陷。
+        fills = []
+        for rule in rules:
+            f = rule.dxf.fill if rule.dxf else None
+            try:
+                rgb = str(f.start_color.rgb) if f is not None and f.start_color is not None else None
+            except Exception:
+                rgb = None
+            fills.append(rgb)
+        opaque = all(f and len(f) == 8 and f.startswith("FF") for f in fills)
         if n == 0:
             self.add("R16", "未回款分类差异化柔和背景条件格式",
-                     True, "源「未回款原因分类」字段 1000 行全为空，分类数=0，无数据行可上色（规则数=0）")
+                     len(rules) == 0,
+                     "源「未回款原因分类」全空 → 分类数=0，规则数应为 0（实际 %d）" % len(rules))
         else:
             self.add("R16", "未回款分类差异化柔和背景条件格式（%d 类 %d 条规则）" % (n, len(rules)),
-                     len(rules) >= n, "规则数=%d 分类数=%d" % (len(rules), n))
+                     len(rules) >= n and opaque,
+                     "规则数=%d 分类数=%d 填充=%s（须为 8 位 FF 开头的不透明 ARGB）"
+                     % (len(rules), n, fills[:4]))
 
     def run_all(self):
         for fn in (self.r1_sheets, self.r2_raw_intact, self.r3_formulas, self.r4_errors,

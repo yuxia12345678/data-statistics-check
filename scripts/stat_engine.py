@@ -46,14 +46,36 @@ AGG_SUM = AGG_STRATEGY_REGISTRY["sum"]
 AGG_NUNIQUE = AGG_STRATEGY_REGISTRY["nunique"]
 
 
+def _is_missing(v) -> bool:
+    """
+    是否为“缺失值”：None / 浮点 NaN / pandas NaT / pd.NA。
+
+    源表里的空单元格经 pandas 读入后是 `float('nan')`，它**不是** None、也不是空串。
+    若只按“None 或空白串”判空，`str(nan)` 会变成字面量 "nan" 混进结果
+    （例如合并表「未回款原因分类」的去重拼接），因此必须单独识别。
+    """
+    if v is None:
+        return True
+    try:
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):     # 数组 / 列表等 pd.isna 返回数组的情形
+        return False
+
+
 def _blank(v) -> bool:
-    """空值判定：None 或纯空白字符串。"""
-    return v is None or (isinstance(v, str) and not v.strip())
+    """空值判定：None、NaN/NaT、纯空白字符串均视为空。"""
+    if v is None:
+        return True
+    if isinstance(v, str):
+        return not v.strip()
+    return _is_missing(v)
 
 
 def _text(v) -> str:
-    """保留源文本原样（含前导零），仅用于比较/分组键。"""
-    return "" if v is None else (v if isinstance(v, str) else str(v)).strip()
+    """保留源文本原样（含前导零），仅用于比较/分组键；缺失值返回空串。"""
+    if _blank(v):
+        return ""
+    return (v if isinstance(v, str) else str(v)).strip()
 
 
 class GeneralStatSkillEngine:
@@ -527,21 +549,26 @@ class GeneralStatSkillEngine:
             else:
                 break
 
-        raw_fmt = self.config.get("raw_copy_format", {})
-        apply_sheet_format(
-            raw_ws, self.style_cfg,
-            num_cols=raw_fmt.get("num_fields", self.t1_cfg["num_fields"]),
-            pct_cols=[],
-            date_cols=raw_fmt.get("date_fields", self.t1_cfg["date_fields"]),
-            cat_cols=raw_fmt.get("cat_fields", self.t1_cfg["cat_fields"]),
-            int_cols=raw_fmt.get("int_fields", []),
-            text_cols=raw_fmt.get("text_fields", []),
-            header_row_idx=header_row,
-            sheet_title=None,            # 保留源第 1 行「单位：万元」，不覆盖为大标题
-            total_title_cols=raw_cols,
-            set_number_format=False,     # 数字格式逐格保持源文件原样
-            display_values=self.expected.get(raw_ws.title),   # 无公式格 → None，按字面值估宽
-        )
+        # 「原始数据」零改动：默认**不叠加任何美化**（不改填充 / 字体 / 边框 / 对齐 /
+        # 列宽 / 冻结），只做“改名为原始数据”这一步，确保与源表逐格一致
+        # （题目注意事项(1)：不得修改原始数据的单元格格式）。
+        # 若确需统一美化，把配置 style_setting.raw_beautify 设为 true。
+        if self.style_cfg.get("raw_beautify", False):
+            raw_fmt = self.config.get("raw_copy_format", {})
+            apply_sheet_format(
+                raw_ws, self.style_cfg,
+                num_cols=raw_fmt.get("num_fields", self.t1_cfg["num_fields"]),
+                pct_cols=[],
+                date_cols=raw_fmt.get("date_fields", self.t1_cfg["date_fields"]),
+                cat_cols=raw_fmt.get("cat_fields", self.t1_cfg["cat_fields"]),
+                int_cols=raw_fmt.get("int_fields", []),
+                text_cols=raw_fmt.get("text_fields", []),
+                header_row_idx=header_row,
+                sheet_title=None,            # 保留源第 1 行「单位：万元」，不覆盖为大标题
+                total_title_cols=raw_cols,
+                set_number_format=False,     # 数字格式逐格保持源文件原样
+                display_values=self.expected.get(raw_ws.title),
+            )
 
         self.run_task1_formula_build(wb, field_to_col)
         self.run_task2_formula_build(wb, field_to_col)

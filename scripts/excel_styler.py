@@ -64,24 +64,35 @@ def set_sheet_title_row(ws: Worksheet, title_text: str, total_col_count: int):
     return merge_range
 
 
-def add_category_conditional_format(ws: Worksheet, cat_col_index: int, start_row: int):
+def add_category_conditional_format(ws: Worksheet, cat_col_index: int, start_row: int,
+                                    style_cfg: dict = None):
     """
     任务2专属：未回款原因分类列设置差异化柔和背景条件格式
+
+    ⚠️ 颜色必须是 **8 位 ARGB**（`FF......`）：openpyxl 会把 6 位十六进制补成
+    `00RRGGBB`，alpha=00 即完全透明，条件格式看起来“没生效”（露出斑马纹底色）。
+
     :param ws:工作表对象
     :param cat_col_index:分类列序号，从1开始
     :param start_row:数据起始行（跳过表头）
+    :param style_cfg:样式配置；取 `reason_soft_colors`（缺省用内置 8 色）
     """
-    soft_color_list = ["FFF2CC", "E2EFDA", "E7E6E6", "DDEBF7", "FCE4D6", "F2F2F2", "E5E7EB"]
+    style_cfg = style_cfg or {}
+    soft_color_list = style_cfg.get("reason_soft_colors") or [
+        "FFFDE9D9", "FFDCE6F1", "FFEBF1DE", "FFE4DFEC",
+        "FFF2DCDB", "FFDAEEF3", "FFFFF2CC", "FFEAF1DD",
+    ]
     max_row = ws.max_row
     range_str = f"{ws.cell(start_row, cat_col_index).coordinate}:{ws.cell(max_row, cat_col_index).coordinate}"
     used_values = set()
     for r in range(start_row, max_row + 1):
         cell = ws.cell(row=r, column=cat_col_index)
         val = cell.value
-        if val is None or val in used_values:
+        if val is None or (isinstance(val, str) and not val.strip()) or val in used_values:
             continue
         used_values.add(val)
-        pick_color = soft_color_list[len(used_values) % len(soft_color_list)]
+        # 第 1 个分类取第 1 个颜色（原实现用 len(...)%n，会跳过首色）
+        pick_color = soft_color_list[(len(used_values) - 1) % len(soft_color_list)]
         fill = PatternFill(start_color=pick_color, end_color=pick_color, fill_type="solid")
         rule = FormulaRule(formula=[f'${ws.cell(r, cat_col_index).column_letter}{r}="{val}"'],
                            fill=fill, stopIfTrue=True)
@@ -363,7 +374,8 @@ def apply_sheet_format(ws: Worksheet, style_cfg: dict,
     # 任务2：未回款原因分类差异化条件格式
     if enable_cat_cond_format and cat_field_name in name2idx:
         cat_col = name2idx[cat_field_name]
-        add_category_conditional_format(ws, cat_col, start_row=header_row_idx + 1)
+        add_category_conditional_format(ws, cat_col, start_row=header_row_idx + 1,
+                                        style_cfg=style_cfg)
 
     # 告警：被登记为文本字段、但数据几乎全是数值的列（很可能是类型登记错了）。
     # 只提示不阻断——真正的"未登记列"已在上面 validate_sheet_field_kinds 直接报错。
