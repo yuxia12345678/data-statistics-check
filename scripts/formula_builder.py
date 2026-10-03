@@ -85,11 +85,19 @@ def build_sumproud_distinct_contract_formula(group_col: str, val_cell: str,
     """
     分组条件下【不重复合同数】。
     口径：该分组取值的原始明细行中，不同合同号的个数（同一合同号在组内多行只计 1 次）。
-    分母 COUNTIFS(合同号,合同号&"",维度,维度) 对每一行都 >=1，不存在除零。
+
+    ⚠️ **条件侧的列必须带 `&""`**：`COUNTIFS(合同号,合同号&"",维度,维度&"")`。
+    COUNTIFS 的「条件」若是**裸单元格引用且为空**，Excel 会按 **0** 处理（而非空白），
+    分母遂为 0 → `0/0` → **`#DIV/0!`**。「未回款原因分类」对已回款行为空（本数据集 431 行），
+    分组去重计数正踩此坑。
+
+    2026-10-03 修复：重构时漏掉了维度侧的 `&""`（`_recovery/pathA/formulas.py` 原实现
+    两侧都有），使「涉及合同数」在 Excel/WPS 打开重算后报错；而注入的缓存值是 pandas
+    算的、依然正确，自检只读缓存值 —— 两个缺陷相互掩盖。已新增 R18 对公式文本直接断言。
     """
     c = _rng(contract_col, first_row, last_row, source_sheet)
     d = _rng(group_col, first_row, last_row, source_sheet)
-    return '=SUMPRODUCT((%s=%s)/COUNTIFS(%s,%s&"",%s,%s))' % (d, val_cell, c, c, d, d)
+    return '=SUMPRODUCT((%s=%s)/COUNTIFS(%s,%s&"",%s,%s&""))' % (d, val_cell, c, c, d, d)
 
 
 # ---------------------------------------------------------------- 除法 / 比率

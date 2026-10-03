@@ -23,6 +23,7 @@
         "col_width_padding": 3,
         "freeze_panes": "A3",
         "raw_beautify": false,
+        "reason_soft_cf": false,
         "reason_soft_colors": [
             "FFFDE9D9",
             "FFDCE6F1",

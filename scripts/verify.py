@@ -84,6 +84,9 @@ class _Config:
         self.FREEZE_PANES = style["freeze_panes"]
         # 「原始数据」是否叠加美化（false = 与源表逐格一致，样式类断言不适用于它）
         self.raw_beautify = bool(style.get("raw_beautify", False))
+        # 任务2 分类列是否叠加「差异化柔和背景条件格式」
+        # false = 该列不设条件格式（与同行其他单元格一致，只走斑马纹），R16/R17 断言规则数为 0
+        self.REASON_SOFT_CF = bool(style.get("reason_soft_cf", False))
 
         # ---- profile（期望值口径）
         self.PROFILES = cfg["profiles"]
@@ -212,6 +215,74 @@ def close(a, b):
         return abs(float(a) - float(b)) <= max(TOL, abs(float(b)) * 1e-9)
     except (TypeError, ValueError):
         return str(a) == str(b)
+
+
+def _split_args(s):
+    """按**顶层**逗号切分函数参数：忽略引号内、括号内的逗号。"""
+    out, depth, cur, inq = [], 0, [], False
+    for ch in s:
+        if inq:
+            cur.append(ch)
+            if ch == '"':
+                inq = False
+        elif ch == '"':
+            inq = True
+            cur.append(ch)
+        elif ch == "(":
+            depth += 1
+            cur.append(ch)
+        elif ch == ")":
+            depth -= 1
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    out.append("".join(cur))
+    return out
+
+
+def iter_func_calls(formula, names):
+    """逐个产出公式里的函数调用 `(函数名, [参数...])`，正确处理嵌套与引号。"""
+    up = formula.upper()
+    i = 0
+    while True:
+        best = None
+        for nm in names:
+            p = up.find(nm + "(", i)
+            if p != -1 and (best is None or p < best[0]):
+                best = (p, nm)
+        if best is None:
+            return
+        pos, nm = best
+        if pos > 0 and (up[pos - 1].isalnum() or up[pos - 1] in "_$!"):
+            i = pos + len(nm) + 1
+            continue
+        open_idx = pos + len(nm)
+        depth, k, inq = 0, open_idx, False
+        while k < len(formula):
+            ch = formula[k]
+            if inq:
+                if ch == '"':
+                    inq = False
+            elif ch == '"':
+                inq = True
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        yield nm, _split_args(formula[open_idx + 1:k])
+        i = k + 1
+
+
+# 裸区间（无 `&""` 防护的整列/整块引用）
+BARE_RANGE_RE = re.compile(r"^([^!]+!)?\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?\d+$")
+# 条件格式公式：EXACT($B3,"分类名")，锚点行 = 区间首行
+CF_FORMULA_RE = re.compile(r'^EXACT\(\$([A-Z]{1,3})(\d+),"(.*)"\)$')
 
 
 class Checker(object):
@@ -592,17 +663,25 @@ class Checker(object):
 
     # ---------- R11 斑马纹
     def r11_zebra(self):
+        """
+        数据区斑马纹：奇数数据行 = 斑马纹底色，偶数数据行 = 无底色。
+        2026-10-03 升级为**逐格**比对（原先只抽查第 1 列）——这样任何单列被单独涂色
+        都会露馅（任务2 分类列曾叠加深色条件格式，在 Excel 里看成“与同行不一致”）。
+        """
         bad = []
         for name in self.profile["sheet_order"]:
             ws = self.wbf[name]
             first = self.srcf["header_row"] + 1 if name == C.SHEET_RAW else 3
+            nc = self.raw_ncols if name == C.SHEET_RAW else ws.max_column
             for i, r in enumerate(range(first, ws.max_row + 1)):
-                fill = ws.cell(r, 1).fill
-                rgb = fill.fgColor.rgb if fill and fill.fill_type else None
                 want = C.ZEBRA_FILL if i % 2 == 0 else None
-                if rgb != want:
-                    bad.append((name, r, rgb, want))
-        self.add("R11", "数据区斑马纹交替行底色", not bad, "不合规 %s" % bad[:6])
+                for c in range(1, nc + 1):
+                    fill = ws.cell(r, c).fill
+                    rgb = fill.fgColor.rgb if fill and fill.fill_type else None
+                    if rgb != want:
+                        bad.append((name, ws.cell(r, c).coordinate, rgb, want))
+        self.add("R11", "数据区斑马纹交替行底色（逐格，含分类列）", not bad,
+                 "不合规 %s" % bad[:6])
 
     # ---------- R12 边框
     def r12_border(self):
@@ -684,6 +763,12 @@ class Checker(object):
         ws = self.wbf[C.SHEET_REASON]
         rules = [r for rng in ws.conditional_formatting for r in rng.rules]
         n = len(self.srcf["reasons"])
+        if not C.REASON_SOFT_CF:
+            # 配置关闭：该列不设条件格式，与同行其他单元格一样只走斑马纹（见 R11）。
+            self.add("R16", "未回款分类柔和背景条件格式：配置已关闭（reason_soft_cf=false）",
+                     len(rules) == 0,
+                     "规则数应为 0（实际 %d）；该列底色应等于同行斑马纹" % len(rules))
+            return
         # 柔和背景必须是**8 位不透明 ARGB**：6 位十六进制会被 openpyxl 补成 00RRGGBB，
         # alpha=00 即透明 —— 条件格式形同失效（露出斑马纹底色），属缺陷。
         fills = []
@@ -705,11 +790,76 @@ class Checker(object):
                      "规则数=%d 分类数=%d 填充=%s（须为 8 位 FF 开头的不透明 ARGB）"
                      % (len(rules), n, fills[:4]))
 
+    # ---------- R17 条件格式公式锚点
+    def r17_cf_formula(self):
+        """
+        条件格式公式必须锚定 sqref 左上角行：`EXACT($B3,"分类名")`。
+        Excel 以区间左上角为基准做**相对行偏移**——若第 k 条规则写成自己那一行
+        （`$B4`、`$B5`…），判断第 4 行时它会被偏移成 `$B5`，于是除首行外
+        **一条规则都不命中**，分类底色露出斑马纹（2026-10-03 修复）。
+        """
+        ws = self.wbf[C.SHEET_REASON]
+        if not C.REASON_SOFT_CF:
+            n_any = sum(len(rng.rules) for rng in ws.conditional_formatting)
+            self.add("R17", "未回款分类条件格式公式锚定区间首行：配置已关闭（无规则）",
+                     n_any == 0, "规则数应为 0（实际 %d）" % n_any)
+            return
+        n_rules, bad = 0, []
+        for rng in ws.conditional_formatting:
+            base = min(cg.min_row for cg in rng.sqref.ranges)
+            for rule in rng.rules:
+                n_rules += 1
+                for f in (rule.formula or []):
+                    m = CF_FORMULA_RE.match(str(f).strip())
+                    if not m:
+                        bad.append((str(f), '须为 EXACT($列行,"分类") 形式'))
+                    elif int(m.group(2)) != base:
+                        bad.append((str(f), "锚点行 %s ≠ 区间首行 %d" % (m.group(2), base)))
+        n = len(self.srcf["reasons"])
+        if n == 0:
+            self.add("R17", "未回款分类条件格式公式锚定区间首行", n_rules == 0,
+                     "分类数=0 → 规则数应为 0（实际 %d）" % n_rules)
+        else:
+            self.add("R17", "未回款分类条件格式公式锚定区间首行（EXACT($B3,…)）",
+                     not bad and n_rules >= n,
+                     "规则数=%d 分类数=%d 不合规 %d 处 %s" % (n_rules, n, len(bad), bad[:3]))
+
+    # ---------- R18 计数条件不得为裸区间
+    def r18_criteria_guard(self):
+        """
+        COUNTIF/COUNTIFS 的「条件」参数不得是**裸区间**。
+        裸区间的元素若是空白单元格，Excel 把该条件按 **0** 处理（而非空白），
+        分母可能为 0 → `0/0` → `#DIV/0!`。「未回款原因分类」有 431 行空白，
+        分组去重计数正踩此坑；而注入的缓存值是对的，只读缓存值的断言发现不了，
+        故必须对公式文本直接断言（2026-10-03 新增）。
+        """
+        bad, checked = [], 0
+        for name in self.profile["sheet_order"]:
+            if name == C.SHEET_RAW:
+                continue
+            ws = self.wbf[name]
+            for row in ws.iter_rows():
+                for cell in row:
+                    v = cell.value
+                    if not (isinstance(v, str) and v.startswith("=")):
+                        continue
+                    for fn_name, args in iter_func_calls(v, ("COUNTIF", "COUNTIFS")):
+                        if len(args) % 2:
+                            continue
+                        for idx in range(1, len(args), 2):
+                            checked += 1
+                            arg = args[idx].strip()
+                            if BARE_RANGE_RE.match(arg):
+                                bad.append((name, cell.coordinate, fn_name, arg))
+        self.add("R18", "COUNTIF/COUNTIFS 条件参数均非裸区间（空白会被当作 0 → #DIV/0!）",
+                 not bad, "检查 %d 处条件，违规 %d 处 %s" % (checked, len(bad), bad[:4]))
+
     def run_all(self):
         for fn in (self.r1_sheets, self.r2_raw_intact, self.r3_formulas, self.r4_errors,
                    self.r5_rowcounts, self.r6_values, self.r7_order, self.r8_formats,
                    self.r9_align, self.r10_header, self.r11_zebra, self.r12_border,
-                   self.r13_freeze, self.r14_width, self.r15_title, self.r16_cf):
+                   self.r13_freeze, self.r14_width, self.r15_title, self.r16_cf,
+                   self.r17_cf_formula, self.r18_criteria_guard):
             fn()
         return self.results
 

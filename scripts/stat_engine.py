@@ -348,7 +348,9 @@ class GeneralStatSkillEngine:
             int_cols=self.t2_cfg.get("int_fields", []),
             text_cols=self.t2_cfg.get("text_fields", []),
             header_row_idx=2,
-            enable_cat_cond_format=True,
+            # 分类列是否叠加「差异化柔和背景条件格式」（题目正文要求），由配置开关控制：
+            # false = 该列不设条件格式，与同行其他单元格一致、只走斑马纹（用户 2026-10-03 选定）。
+            enable_cat_cond_format=self.style_cfg.get("reason_soft_cf", False),
             cat_field_name=group_field,
             sheet_title=self.sheet_title_cfg["task2"],
             total_title_cols=len(header_list),
@@ -596,7 +598,13 @@ class GeneralStatSkillEngine:
         self.report.update({
             "output": os.path.abspath(output_file_path),
             "sheet_order": [w.title for w in load_workbook(output_file_path).worksheets],
-            "raw_sheet": "值/行列顺序/数字格式原样保留，已叠加表头美化、斑马纹、边框、列宽、冻结",
+            # 回执必须**如实反映配置**（硬性规则 2 要求原始数据不得被美化）：
+            # 此前这里是一句硬编码文案，raw_beautify=false 时仍写着"已叠加表头美化/斑马纹…"，属交付物事实错误。
+            "raw_sheet": (
+                "零美化：仅改表名；值/行列顺序/数字格式/填充·字体·边框·对齐/列宽/冻结全部与源表逐格一致"
+                if not self.style_cfg.get("raw_beautify", False) else
+                "值/行列顺序/数字格式原样保留，另叠加了表头美化、斑马纹、水平边框、列宽重算、冻结窗格"
+            ),
             "formula_cells_written": stats["formula_cells"],
             "cached_values_injected": stats["injected"],
             "cached_by_sheet": stats["sheets"],

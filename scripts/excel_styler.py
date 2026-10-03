@@ -69,8 +69,18 @@ def add_category_conditional_format(ws: Worksheet, cat_col_index: int, start_row
     """
     任务2专属：未回款原因分类列设置差异化柔和背景条件格式
 
+    ⚠️ **默认不启用**（配置 `style_setting.reason_soft_cf` = false）：用户 2026-10-03 选定
+    该列**不设条件格式**、与同行其他单元格一致（只走斑马纹）。启用时由
+    `stat_engine` 传入 `enable_cat_cond_format=True` 呼叫本函数。
+
     ⚠️ 颜色必须是 **8 位 ARGB**（`FF......`）：openpyxl 会把 6 位十六进制补成
     `00RRGGBB`，alpha=00 即完全透明，条件格式看起来“没生效”（露出斑马纹底色）。
+
+    ⚠️ 公式必须锚定**区间左上角行**：`EXACT($B3,"分类名")`。Excel 以 sqref 左上角为基准
+    做**相对行偏移**——若第 k 条规则写成分类自己那一行（`$B4`、`$B5`…），判断第 4 行时
+    它会被偏移成 `$B5`，于是**除首行外一条规则都不命中**，分类底色露出斑马纹。
+    2026-10-03 修复：重构时把 `EXACT($B{first_row},…)` 写成了 `${letter}{r}=…`（`r` 为分类
+    自己所在行），并丢失 EXACT；原始实现见 `_recovery/pathA/styling.py`。
 
     :param ws:工作表对象
     :param cat_col_index:分类列序号，从1开始
@@ -83,7 +93,10 @@ def add_category_conditional_format(ws: Worksheet, cat_col_index: int, start_row
         "FFF2DCDB", "FFDAEEF3", "FFFFF2CC", "FFEAF1DD",
     ]
     max_row = ws.max_row
-    range_str = f"{ws.cell(start_row, cat_col_index).coordinate}:{ws.cell(max_row, cat_col_index).coordinate}"
+    col_letter = get_column_letter(cat_col_index)
+    # 条件格式公式的锚点：区间左上角行（不是分类自己所在行）
+    anchor_row = start_row
+    range_str = f"{col_letter}{anchor_row}:{get_column_letter(cat_col_index)}{max_row}"
     used_values = set()
     for r in range(start_row, max_row + 1):
         cell = ws.cell(row=r, column=cat_col_index)
@@ -94,8 +107,10 @@ def add_category_conditional_format(ws: Worksheet, cat_col_index: int, start_row
         # 第 1 个分类取第 1 个颜色（原实现用 len(...)%n，会跳过首色）
         pick_color = soft_color_list[(len(used_values) - 1) % len(soft_color_list)]
         fill = PatternFill(start_color=pick_color, end_color=pick_color, fill_type="solid")
-        rule = FormulaRule(formula=[f'${ws.cell(r, cat_col_index).column_letter}{r}="{val}"'],
-                           fill=fill, stopIfTrue=True)
+        rule = FormulaRule(
+            formula=['EXACT($%s%d,"%s")' % (col_letter, anchor_row,
+                                              str(val).replace('"', '""'))],
+            fill=fill, stopIfTrue=True)
         ws.conditional_formatting.add(range_str, rule)
 
 # def auto_fit_column_width(ws: Worksheet):
