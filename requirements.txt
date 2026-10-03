@@ -1,0 +1,5 @@
+# 配置驱动引擎（run_skill.py → stat_engine.py）需要 pandas / numpy
+numpy>=1.24
+pandas>=2.0
+# analyze.py → verify.py 链路共用
+openpyxl>=3.1

@@ -1,0 +1,255 @@
+{
+  "input": {
+    "sheet_name": "Sheet1",
+    "header_row": 2
+  },
+  "style_setting": {
+    "header_bg_color": "B4C7E7",
+    "header_font_color": "FFFFFF",
+    "odd_row_bg": "F8F9FA",
+    "even_row_bg": "FFFFFF",
+    "horizontal_border_color": "D9D9D9",
+    "amount_number_format": "#,##0.000",
+    "percent_number_format": "0.00%"
+  },
+  "output_filename": "合同开票及回款核对表分析结果.xlsx",
+  "output_sheet_names": {
+    "raw_copy": "原始数据",
+    "task1_result": "同合同号合并汇总"
+  },
+  "task1_group_merge": {
+    "primary_key": "合同号",
+    "new_serial_name": "序号",
+    "agg_strategy_list": [
+      {
+        "field_name": "区域",
+        "agg_strategy": "first_non_null"
+      },
+      {
+        "field_name": "客户分类",
+        "agg_strategy": "first_non_null"
+      },
+      {
+        "field_name": "合同号",
+        "agg_strategy": "first_non_null"
+      },
+      {
+        "field_name": "开票日期",
+        "agg_strategy": "first_non_null"
+      },
+      {
+        "field_name": "合同金额",
+        "agg_strategy": "sum"
+      },
+      {
+        "field_name": "未开票金额",
+        "agg_strategy": "sum"
+      },
+      {
+        "field_name": "开票金额",
+        "agg_strategy": "sum"
+      },
+      {
+        "field_name": "回款合计",
+        "agg_strategy": "sum"
+      },
+      {
+        "field_name": "开票未回款",
+        "agg_strategy": "sum"
+      },
+      {
+        "field_name": "部门",
+        "agg_strategy": "first_non_null"
+      },
+      {
+        "field_name": "责任人",
+        "agg_strategy": "first_non_null"
+      },
+      {
+        "field_name": "账龄",
+        "agg_strategy": "first_non_null"
+      },
+      {
+        "field_name": "未回款原因分类",
+        "agg_strategy": "distinct_join",
+        "join_separator": "；"
+      }
+    ],
+    "num_fields": [
+      "合同金额",
+      "未开票金额",
+      "开票金额",
+      "回款合计",
+      "开票未回款"
+    ],
+    "pct_fields": [],
+    "date_fields": [
+      "开票日期"
+    ],
+    "cat_fields": [
+      "区域",
+      "客户分类",
+      "部门",
+      "责任人",
+      "账龄",
+      "未回款原因分类"
+    ]
+  },
+  "task2_special_agg": {
+    "sheet_name": "未回款原因分类汇总",
+    "group_field": "未回款原因分类",
+    "amount_field": "开票未回款",
+    "contract_key": "合同号",
+    "target_sum_field": "总开票未回款金额",
+    "ratio_field_name": "金额占比",
+    "sort_by_field": "总开票未回款金额",
+    "metrics": {
+      "总开票未回款金额": [
+        "开票未回款",
+        "sum"
+      ],
+      "涉及合同数": [
+        "合同号",
+        "nunique"
+      ],
+      "涉及数据笔数": [
+        "合同号",
+        "count"
+      ]
+    },
+    "num_fields": [
+      "总开票未回款金额",
+      "涉及合同数",
+      "涉及数据笔数"
+    ],
+    "pct_fields": [
+      "金额占比"
+    ],
+    "cat_fields": [
+      "未回款原因分类"
+    ]
+  },
+  "task3_multi_dim": {
+    "overview_sheet_name": "统计总览",
+    "dim_list": [
+      {
+        "dimension_field": "区域",
+        "sheet_name": "区域统计"
+      },
+      {
+        "dimension_field": "部门",
+        "sheet_name": "部门统计"
+      },
+      {
+        "dimension_field": "账龄",
+        "sheet_name": "账龄统计"
+      },
+      {
+        "dimension_field": "客户分类",
+        "sheet_name": "客户分类统计"
+      }
+    ],
+    "dim_metrics": {
+      "总合同金额": [
+        "合同金额",
+        "sum"
+      ],
+      "总开票金额": [
+        "开票金额",
+        "sum"
+      ],
+      "总回款合计": [
+        "回款合计",
+        "sum"
+      ],
+      "总开票未回款": [
+        "开票未回款",
+        "sum"
+      ],
+      "合同数": [
+        "合同号",
+        "nunique"
+      ]
+    },
+    "derived_ratio_list": [
+      {
+        "output_field": "整体回款率",
+        "numerator_field": "总回款合计",
+        "denominator_field": "总合同金额"
+      },
+      {
+        "output_field": "未回款占比",
+        "numerator_field": "总开票未回款",
+        "denominator_field": "总合同金额"
+      }
+    ],
+    "sort_by_field": "总开票未回款",
+    "num_fields": [
+      "总合同金额",
+      "总开票金额",
+      "总回款合计",
+      "总开票未回款",
+      "合同数"
+    ],
+    "pct_fields": [
+      "整体回款率",
+      "未回款占比"
+    ],
+    "cat_fields": [],
+    "overview_metrics": [
+      {
+        "output_field": "总合同金额",
+        "agg_operator": "sum",
+        "source_field": "合同金额"
+      },
+      {
+        "output_field": "总开票金额",
+        "agg_operator": "sum",
+        "source_field": "开票金额"
+      },
+      {
+        "output_field": "总回款合计",
+        "agg_operator": "sum",
+        "source_field": "回款合计"
+      },
+      {
+        "output_field": "总开票未回款",
+        "agg_operator": "sum",
+        "source_field": "开票未回款"
+      },
+      {
+        "output_field": "整体回款率",
+        "agg_operator": "ratio",
+        "numerator": "总回款合计",
+        "denominator": "总合同金额",
+        "source_field": ""
+      },
+      {
+        "output_field": "总合同数",
+        "agg_operator": "nunique",
+        "source_field": "合同号"
+      },
+      {
+        "output_field": "总数据笔数",
+        "agg_operator": "count_rows",
+        "source_field": ""
+      },
+      {
+        "output_field": "未回款原因分类数",
+        "agg_operator": "nunique",
+        "source_field": "未回款原因分类"
+      }
+    ],
+    "overview_num_fields": [
+      "总合同金额",
+      "总开票金额",
+      "总回款合计",
+      "总开票未回款",
+      "总合同数",
+      "总数据笔数"
+    ],
+    "overview_pct_fields": [
+      "整体回款率"
+    ]
+  }
+}
