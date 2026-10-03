@@ -252,7 +252,7 @@ class GeneralStatSkillEngine:
                                                          last_row=self.last_row),
                               exp if not _blank(exp) else "")
                 elif strat == "distinct_join":
-                    sep = rule.get("join_separator", "、")
+                    sep = rule.get("join_separator", "；")
                     text = self._distinct_join(g[field], sep)
                     # 去重拼接是文本聚合：Excel 无稳定的非数组写法
                     # （TEXTJOIN/UNIQUE/FILTER 需 Excel365），故直接写入结果文本，

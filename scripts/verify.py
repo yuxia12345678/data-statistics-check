@@ -67,6 +67,9 @@ class _Config:
         # ---- 字段口径
         self.MERGE_SUM_FIELDS = [r["field_name"] for r in t1["agg_strategy_list"]
                                  if r["agg_strategy"] == "sum"]
+        # 合并表「备注文本字段」的去重拼接分隔符（与生成侧同一事实源，题目只要求“统一”）
+        self.JOIN_SEP = next((r.get("join_separator", "；") for r in t1["agg_strategy_list"]
+                              if r["agg_strategy"] == "distinct_join"), "；")
         self.OVERVIEW_LABELS = [m["output_field"] for m in t3["overview_metrics"]]
         self.FIELD_KIND = dict(cfg["field_kind"])
 
@@ -164,10 +167,14 @@ def source_facts(path, profile=None):
     g = collections.OrderedDict()
     for r, rec in raw:
         code = key(rec, "合同号")
-        d = g.setdefault(code, {"sums": collections.defaultdict(float), "rows": 0})
+        d = g.setdefault(code, {"sums": collections.defaultdict(float), "rows": 0,
+                                "reasons": set()})
         d["rows"] += 1
         for f in C.MERGE_SUM_FIELDS:
             d["sums"][f] += num(rec.get(f))
+        _r = key(rec, "未回款原因分类")
+        if _r:
+            d["reasons"].add(_r)
     facts["contracts"] = g
     facts["contract_count"] = len(g)
 
@@ -496,6 +503,7 @@ class Checker(object):
         headers = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
         idx = {h: i + 1 for i, h in enumerate(headers)}
         bad = []
+        bad_txt = []
         for r in range(3, ws.max_row + 1):
             code = ws.cell(r, idx["合同号"]).value
             g = f["contracts"].get(str(code).strip())
@@ -507,8 +515,18 @@ class Checker(object):
                     continue
                 if not close(ws.cell(r, idx[fld]).value, g["sums"][fld]):
                     bad.append((r, code, fld, ws.cell(r, idx[fld]).value, g["sums"][fld]))
-        self.add("R6a", "合并表 5 个数值字段求和正确（463 合同 × 5 字段）",
-                 not bad, "差异 %d 处 %s" % (len(bad), bad[:5]))
+            # 备注文本字段：按配置分隔符去重拼接（题目要求“统一分隔符”，集合口径比对）
+            if "未回款原因分类" in idx:
+                _v = ws.cell(r, idx["未回款原因分类"]).value
+                txt = "" if _v is None else str(_v).strip()
+                got = {t for t in txt.split(C.JOIN_SEP) if t} if txt else set()
+                if got != g["reasons"]:
+                    bad_txt.append((r, code, txt, sorted(g["reasons"])))
+        self.add("R6a", "合并表 5 个数值字段求和正确 + 「未回款原因分类」按「%s」去重拼接与源一致（%d 合同）"
+                 % (C.JOIN_SEP, f["contract_count"]),
+                 not bad and not bad_txt,
+                 "数值差异 %d 处 %s；拼接差异 %d 处 %s"
+                 % (len(bad), bad[:5], len(bad_txt), bad_txt[:3]))
 
         # 维度表 7 项指标
         for sheet, dim in C.DIMENSIONS:

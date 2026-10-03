@@ -131,7 +131,7 @@
             {
                 "field_name": "未回款原因分类",
                 "agg_strategy": "distinct_join",
-                "join_separator": "、"
+                "join_separator": "；"
             }
         ],
         "num_fields": [
