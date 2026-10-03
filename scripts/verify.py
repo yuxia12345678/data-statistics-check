@@ -376,10 +376,10 @@ class Checker(object):
                  all(vals[i] >= vals[i + 1] for i in range(len(vals) - 1)), "行数=%d" % len(vals))
         ws = self.wbv[C.SHEET_MERGE]
         heads = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
-        amt_col = heads.index("合同金额") + 1
-        vals = [ws.cell(r, amt_col).value or 0 for r in range(3, ws.max_row + 1)]
-        self.add("R7-合并", "合并表按合同金额降序（与附件2-示例一致）",
-                 all(vals[i] >= vals[i + 1] - 1e-9 for i in range(len(vals) - 1)),
+        key_col = heads.index("合同号") + 1
+        vals = [str(ws.cell(r, key_col).value or "") for r in range(3, ws.max_row + 1)]
+        self.add("R7-合并", "合并表按合同号升序（从小到大）",
+                 all(vals[i] <= vals[i + 1] for i in range(len(vals) - 1)),
                  "行数=%d" % len(vals))
         # 序号连续
         for name in [C.SHEET_MERGE, C.SHEET_REASON] + [s for s, _d in C.DIMENSIONS]:

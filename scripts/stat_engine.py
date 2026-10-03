@@ -11,7 +11,7 @@ Skill 主业务引擎 stat_engine（配置驱动版）
 2. **表顺序**：统计总览排第 4 位
    （原始数据 / 同合同号合并汇总 / 未回款原因分类汇总 / 统计总览 / 4 个维度表）；
 3. **序号公式化**：所有序号列写入 `=ROW()-2`，不再是字面量整数；
-4. **合并表排序**：按合同金额降序；
+4. **合并表排序**：按合同号升序（从小到大）；
 5. **合同数口径**：组内**不同合同号**个数（SUMPRODUCT 去重计数）；修正原先
    拿维度值去比对合同号列、导致合同数恒为 0 的错误；
 6. **未回款原因分类数**：按非空去重计数；修正原先 COUNTA 把空文本公式计入的错误；
@@ -160,12 +160,10 @@ class GeneralStatSkillEngine:
         return sorted([v for v in vals if not _blank(v)])
 
     def get_contract_list(self) -> list:
-        """合同号列表：按合同金额降序（并列时保持首次出现顺序）。"""
+        """合同号列表：按合同号升序（从小到大；按文本比较，结果稳定可复现）。"""
         pk = self.t1_cfg["primary_key"]
-        amount_field = self.t1_cfg["num_fields"][0] if self.t1_cfg.get("num_fields") else "合同金额"
-        sums = self.df_raw.groupby(pk)[amount_field].sum()
-        sums = sums.sort_values(ascending=False, kind="stable")
-        return [k for k in sums.index.tolist() if not _blank(k)]
+        vals = self.df_raw[pk].dropna().unique().tolist()
+        return sorted([v for v in vals if not _blank(v)], key=_text)
 
     def _first_non_null(self, series):
         """分组取第一条非空有效值（空字符串视为空）。"""
