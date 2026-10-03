@@ -114,20 +114,25 @@ def build_divide_by_global_formula(num_cell: str, den_col: str, source_sheet: st
     return '=IF(%s=0,"",%s/%s)' % (s, num_cell, s)
 
 
-def build_divide_by_cells_diff_formula(num_cell: str, minuend_cell: str,
-                                       subtrahend_cell: str) -> str:
+def build_divide_by_columns_diff_formula(num_cell: str, minuend_col: str, subtrahend_col: str,
+                                         source_sheet: str = RAW,
+                                         first_row: int = 3, last_row=None) -> str:
     """
-    本行数值 / (另外两个"派生格"之差)。用于「未回款原因分类汇总」的占比：
+    本行数值 / (数据源两列合计之差)。用于「未回款原因分类汇总」的占比：
 
-        分母 = 统计总览的「总合同金额」-「总回款合计」
+        分母 = 合同金额合计 - 回款合计（即统计总览的"总合同金额 - 总回款合计"），
+        两列合计均直接取自「原始数据」表。
 
-    形如：`=IF((统计总览!$B$3-统计总览!$B$5)=0,"",C3/(统计总览!$B$3-统计总览!$B$5))`
+    形如：
+        =IF((SUM(原始数据!$F$3:$F$1002)-SUM(原始数据!$J$3:$J$1002))=0,"",
+            C3/(SUM(原始数据!$F$3:$F$1002)-SUM(原始数据!$J$3:$J$1002)))
 
-    被引用的两格本身是引用「原始数据」的 SUM 公式，故整条依赖链仍是动态公式
-    （`verify.py` 的 R3c 允许"跨表引用派生公式格"这一形态）。
+    全部引用「原始数据」区间，满足硬性规则"统计值必须动态引用数据源"；
     分母为 0 时输出空值，避免 `#DIV/0!`。
     """
-    den = "(%s-%s)" % (minuend_cell, subtrahend_cell)
+    a = build_sum_all_formula(minuend_col, source_sheet, first_row, last_row)[1:]
+    b = build_sum_all_formula(subtrahend_col, source_sheet, first_row, last_row)[1:]
+    den = "(%s-%s)" % (a, b)
     return '=IF(%s=0,"",%s/%s)' % (den, num_cell, den)
 
 
