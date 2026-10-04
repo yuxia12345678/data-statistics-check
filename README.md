@@ -1,7 +1,7 @@
 # 合同数据统计核对 Skill
 
 > 企业合同开票与回款明细自动化统计工具
-> Python `3.11`｜唯一依赖 `openpyxl`
+> Python `3.11`｜依赖 `openpyxl` + `pandas` + `numpy`｜支持离线安装（`vendor/`）
 >
 > **本文件是面向人的项目说明，不是执行依据。** 口径、命令与交付校验一律以 `SKILL.md` 为准。
 
@@ -29,13 +29,16 @@
 data-statistics-check/
 ├── SKILL.md                    # 【执行依据】口径、命令、46 项交付校验
 ├── README.md                   # 本文件：面向人的项目说明
-├── requirements.txt            # openpyxl>=3.1
+├── requirements.txt            # numpy / pandas / openpyxl（依赖声明唯一事实源）
+├── install_offline.sh|.bat     # 离线安装依赖（读 vendor/）
+├── vendor/                     # 离线依赖 wheel（Py3.11 / win_amd64）+ 锁定清单
 ├── 输入/                        # 待处理的源表
 ├── 运行成果/                    # 结果 Excel + 运行回执.json + 自检报告.json
 ├── config/                     # 业务配置（contract_repayment.json）
 ├── references/                 # 口径与公式、样式、与示例的差异、构建过程
-└── scripts/                    # 8 个文件，全部为执行路径所需
+└── scripts/                    # 9 个文件，全部为执行路径所需
     ├── run_skill.py            # 入口（--config / --input / --output-dir / --only）
+    ├── deps_check.py           # 运行前依赖自检：齐全跳过 / 缺失自动补齐（离线优先）
     ├── stat_engine.py          # 引擎内核（按 JSON 建 8 张表）
     ├── formula_builder.py      # Excel 公式生成器
     ├── excel_styler.py         # 统一美化（配置驱动）
@@ -47,13 +50,41 @@ data-statistics-check/
 
 ## 四、安装
 
+**通常不用装。** `run_skill.py` / `verify.py` 启动时会**自动做依赖自检**：
+齐全就跳过安装直接跑；缺失就用工程内 `vendor/` **离线补齐**（失败再退联网），补齐后继续执行。
+
+需要显式安装时：
+
+**联网环境：**
+
 ```bash
 pip install -r requirements.txt
 ```
 
+**离线环境（无外网）：** 工程 `vendor/` 目录已内置全部依赖 wheel
+（Windows / CPython 3.11），全程不联网：
+
+```bash
+./install_offline.sh          # bash / Git Bash
+install_offline.bat           # Windows
+# 等价于：
+python -m pip install --no-index --find-links vendor -r vendor/requirements.lock.txt
+```
+
+详见 `vendor/README.md`（含锁定版本清单与其它平台重新拉取方法）。
+
+**只检测、不安装**（用于环境巡检）：
+
+```bash
+python scripts/deps_check.py --list     # 打印依赖清单与当前状态
+python scripts/deps_check.py --check    # rc=1 表示有缺失
+python scripts/deps_check.py --offline  # 强制只用 vendor/ 离线安装
+```
+
 ## 五、运行
 
-业务规则全写在 `config/contract_repayment.json`，改口径 / 改样式只改配置、不动代码。
+依赖自检在启动时自动完成，直接执行即可。业务规则全写在 `config/contract_repayment.json`，
+改口径 / 改样式只改配置、不动代码。
 
 ```bash
 # 1) 生成结果（输出文件名取自配置 output_filename）
@@ -128,7 +159,8 @@ Windows 下命令用 `python`。自检退出码 0 = 全部合规；1 = 有不合
 
 | 现象 | 原因与处理 |
 |---|---|
-| `ModuleNotFoundError: openpyxl` / `pandas` | 未装依赖，执行 `pip install -r requirements.txt` |
+| `ModuleNotFoundError: openpyxl` / `pandas` | 启动自检应已自动补齐；若仍报错，手动跑 `python scripts/deps_check.py --list` 看缺什么。离线机器确认 `vendor/` 完整（见 `vendor/README.md`） |
+| 自检报「依赖自检未通过」并退出码 1 | 自动补齐后仍缺依赖。按提示排查：Python 是否为 3.11、`vendor/` 是否完整；也可手动 `install_offline.bat` |
 | 自检报找不到 `contract_repayment.json` | `verify.py` 默认读 `config/contract_repayment.json`（与生成侧同一份）；用 `--config` 指定其它路径 |
 | 程序读取结果文件时统计值全是 `None` | 缓存值未注入；请使用本 Skill 的产物，`stat_engine.py` 会在保存后自动注入 |
 | 「开票日期」显示 `#VALUE!` | 该列被当成日期序列值了；必须保持文本 `yyyymmdd` + `@` |

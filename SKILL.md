@@ -28,8 +28,11 @@ data-statistics-check/
 │   ├── 样式规范.md
 │   ├── 与示例文件的差异.md
 │   └── 构建过程文档.md
-└── scripts/                    # 8 个文件，全部为执行路径所需
+├── vendor/                     # 离线依赖 wheel（Py3.11 / win_amd64）+ requirements.lock.txt
+├── install_offline.bat|.sh     # 离线安装依赖（等价 deps_check.py --offline）
+└── scripts/                    # 9 个文件，全部为执行路径所需
     ├── run_skill.py            # 入口：--config <json> --input <xlsx> [--output-dir <dir>] [--only <表名>]
+    ├── deps_check.py           # 运行前依赖自检：齐全跳过 / 缺失自动补齐（离线优先）
     ├── stat_engine.py          # 引擎内核：按 JSON 配置构建 8 张工作表
     ├── formula_builder.py      # Excel 公式生成器（限定数据区间）
     ├── excel_styler.py         # 统一美化（表头/斑马纹/边框/列宽/冻结/条件格式）
@@ -44,6 +47,26 @@ data-statistics-check/
 > （字段类型表 `field_kind` / sheet 顺序 / 数字格式 / `spec`·`example` profile）全部在同一份 JSON；
 > 改口径或改样式**只改这一处**，生成与校验同步生效。
 > `__pycache__/` 属自动生成可随时删除；`_recovery/` 是历史快照（含已下线的 analyze 链路），确认后可删。
+
+## 零、运行前依赖自检（自动，无需手工介入）
+
+`run_skill.py` / `verify.py` 启动时**先**执行依赖自检（`scripts/deps_check.py`），再 import
+`pandas` / `openpyxl`：
+
+- **依赖齐全** → 跳过安装，直接继续执行；
+- **依赖缺失** → 自动补齐：优先用工程内 `vendor/` 离线安装（`--no-index`，断网可用），
+  失败再退联网 `pip install -r requirements.txt`，成功后继续执行；
+- **补齐后仍缺失** → 打印排查建议并**退出码 1**终止，不会抛裸 traceback。
+
+因此**无需手工 `pip install`，也无需先激活虚拟环境**。单独使用：
+
+```bash
+python3 scripts/deps_check.py --list      # 打印依赖清单与当前状态
+python3 scripts/deps_check.py --check     # 只检测不安装（rc=1 表示有缺失）
+python3 scripts/deps_check.py --offline   # 强制离线安装（只用 vendor/）
+```
+
+依赖声明唯一事实源 = `requirements.txt`（当前：`numpy>=1.24`、`pandas>=2.0`、`openpyxl>=3.1`）。
 
 ## 一、输入
 
@@ -111,10 +134,21 @@ python3 scripts/verify.py \
 | | `--source` | 是 | 原始输入 xlsx（独立重算源事实用） |
 | | `--profile` | 否 | 期望值口径；默认 `spec`（以题目正文为准） |
 | | `--json` | 否 | 自检报告 JSON 输出路径 |
+| `deps_check.py` | `--list` | 否 | 打印依赖清单与当前状态 |
+| | `--check` | 否 | **只检测不安装**（rc=1 表示有缺失）；等价环境变量 `DSC_NO_AUTO_INSTALL=1` |
+| | `--offline` | 否 | 只允许离线安装（仅用 `vendor/`，不联网） |
+| | `--quiet` | 否 | 静默，仅出错时输出 |
+| | `--no-probe` | 否 | 跳过导入探测，只比对已安装版本号 |
+
+> `deps_check.py` 已内嵌在 `run_skill.py` / `verify.py` 的启动流程中，正常执行**不需要**单独调用它。
 
 ### 运行环境
 
-- **Python 3.11**；装依赖：`pip install -r requirements.txt`
+- **Python 3.11**；**依赖无需手工安装**——入口脚本启动时会自动自检并按需补齐（见「零、运行前依赖自检」）
+  - 需要显式预装时：联网 `pip install -r requirements.txt`；离线
+    `install_offline.bat` / `install_offline.sh`，或
+    `pip install --no-index --find-links vendor -r vendor/requirements.lock.txt`
+    （`vendor/` 已内置 Windows/CPython 3.11 全部依赖 wheel，断网可装）
 - 依赖三项：`openpyxl`（建表 / 美化）、`pandas`（分组聚合与排序键）、`numpy`（pandas 依赖）
 - Windows 下用 `python`（而非 `python3`）调用；以下命令示例中的 `python3` 同理替换
 - `verify.py` 的期望值与样式常量**不再有独立的常量文件**，而是从 `config/contract_repayment.json`
@@ -207,7 +241,7 @@ python3 scripts/verify.py \
 
 | 现象 | 原因与处理 |
 |---|---|
-| `ModuleNotFoundError: openpyxl` / `pandas` | 未按 `requirements.txt` 安装依赖，执行 `pip install -r requirements.txt` |
+| `ModuleNotFoundError: openpyxl` / `pandas` | 未装依赖：联网 `pip install -r requirements.txt`；离线 `install_offline.bat`（读 `vendor/`） |
 | 自检报找不到 `contract_repayment.json` | `verify.py` 默认读 `config/contract_repayment.json`（与生成侧同一份）；用 `--config` 指定其它路径 |
 | 自检 R8–R17 报样式不合规 | 期望值来自 `config/contract_repayment.json`；改样式后请确认改的是这份 JSON，勿另写内联常量 |
 | 程序读取结果文件时统计值全是 `None` | 缓存值未注入。`stat_engine.py` 保存后会调用 `cached_values.py` 写入 `<v>`；用其他脚本另存同一工作簿会丢缓存，R3b 会失败 |

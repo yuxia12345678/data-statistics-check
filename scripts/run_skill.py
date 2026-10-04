@@ -11,7 +11,6 @@ import json
 import os
 import sys
 import traceback
-from stat_engine import GeneralStatSkillEngine
 
 RECEIPT_NAME = "运行回执.json"
 
@@ -22,6 +21,22 @@ try:
     sys.stdout.reconfigure(errors="replace")
 except Exception:
     pass
+
+# ---------------------------------------------------------------- 运行前依赖自检
+# 必须放在 `import stat_engine`（进而 import pandas）之前：
+#   依赖齐全 → 跳过安装，直接继续执行；
+#   依赖缺失 → 优先用工程内 vendor/ 离线安装，成功后再继续。
+# 实现见 scripts/deps_check.py。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from deps_check import DependencyError, ensure_dependencies
+
+try:
+    ensure_dependencies()
+except DependencyError as exc:
+    print("❌ 运行前依赖自检未通过，已终止执行：\n      %s" % exc)
+    sys.exit(1)
+
+from stat_engine import GeneralStatSkillEngine
 
 
 def main():

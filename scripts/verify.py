@@ -24,6 +24,22 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+try:
+    sys.stdout.reconfigure(errors="replace")
+except Exception:
+    pass
+
+# ---------------------------------------------------------------- 运行前依赖自检
+# 放在 `from openpyxl import ...` 之前：齐全则跳过安装直接自检，缺失则离线优先补齐。
+# 实现见 scripts/deps_check.py。
+from deps_check import DependencyError, ensure_dependencies
+
+try:
+    ensure_dependencies()
+except DependencyError as exc:
+    print("❌ 运行前依赖自检未通过，已终止执行：\n      %s" % exc)
+    sys.exit(1)
+
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
