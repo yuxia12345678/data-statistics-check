@@ -13,22 +13,10 @@
 `profiles.<default_profile>.sheet_order`，与实际输出表名（`output_sheet_names` +
 `task2_special_agg.sheet_name` + `task3_multi_dim.overview_sheet_name` + `dim_list`）
 双向核对。因此换一套业务配置 = 换一套表名与规则，代码零改动。
-`DEFAULT_SPEC_SHEET_ORDER` 仅是配置未声明时的兜底（即本题《数据统计核对》规定的 8 张表）。
+**引擎内不再保留任何业务表名兜底值**：配置未声明 `sheet_order` 时直接报错，
+    而不是回落到内置常量——兜底常量会把本题表名带进通用引擎，破坏「代码零业务字面量」。
 """
 from typing import Dict, Any
-
-# 本题（数据统计核对）规定的 8 张工作表名称与顺序 —— 仅作**兜底默认值**。
-# 配置里 `profiles.<default_profile>.sheet_order` 一旦声明，期望值以配置为准。
-DEFAULT_SPEC_SHEET_ORDER = [
-    "原始数据",
-    "同合同号合并汇总",
-    "未回款原因分类汇总",
-    "统计总览",
-    "区域统计",
-    "部门统计",
-    "账龄统计",
-    "客户分类统计",
-]
 
 # 期望的工作表数量（题目硬性要求：必须包含 8 张独立工作表）
 EXPECT_SHEET_COUNT = 8
@@ -37,15 +25,22 @@ EXPECT_SHEET_COUNT = 8
 def expected_sheet_order(cfg: Dict[str, Any]):
     """返回期望的 8 张工作表**名称与顺序**。
 
-    唯一事实源：`profiles.<default_profile>.sheet_order`；
-    未声明时回落到 `DEFAULT_SPEC_SHEET_ORDER`（本题口径）。
+    唯一事实源：`profiles.<default_profile>.sheet_order`。
+    配置未声明时**直接抛错**：内置兜底常量会把本题业务表名注入通用引擎，
+    换业务时会被误当作期望值，因此一律要求配置显式声明。
     """
     profiles = cfg.get("profiles") or {}
     prof = profiles.get(cfg.get("default_profile")) if cfg.get("default_profile") else None
     if not isinstance(prof, dict):
         prof = next((p for p in profiles.values() if isinstance(p, dict)), None) or {}
     order = prof.get("sheet_order")
-    return list(order) if order else list(DEFAULT_SPEC_SHEET_ORDER)
+    if not order:
+        raise ValueError(
+            "业务配置缺少 `profiles.<default_profile>.sheet_order`（8 张工作表名称与顺序）。"
+            "该清单必须由业务配置显式声明——引擎不内置任何业务表名兜底值，"
+            "否则换业务后本题表名会被误当作期望值。"
+        )
+    return list(order)
 
 
 def validate_business_config(cfg: Dict[str, Any]) -> None:

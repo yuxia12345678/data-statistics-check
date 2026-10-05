@@ -17,7 +17,7 @@
     "账龄": 3,
     "客户分类": 8
   },
-  "output": "E:\\.agents\\data-statistics-check\\运行成果\\合同开票及回款核对表分析结果_姓名.xlsx",
+  "output": "E:\\.agents\\data-statistics-check\\运行成果\\合同开票及回款核对表分析结果_赵思敏.xlsx",
   "sheet_order": [
     "原始数据",
     "同合同号合并汇总",
@@ -41,6 +41,6 @@
   },
   "formula_errors": [],
   "formula_error_count": 0,
-  "elapsed_sec": 2.91,
+  "elapsed_sec": 1.93,
   "status": "success"
 }

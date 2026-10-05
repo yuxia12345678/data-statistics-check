@@ -83,9 +83,10 @@ def add_category_conditional_format(ws: Worksheet, cat_col_index: int, start_row
     """
     任务2专属：未回款原因分类列设置差异化柔和背景条件格式
 
-    ⚠️ **默认不启用**（配置 `style_setting.reason_soft_cf` = false）：用户 2026-10-03 选定
-    该列**不设条件格式**、与同行其他单元格一致（只走斑马纹）。启用时由
-    `stat_engine` 传入 `enable_cat_cond_format=True` 呼叫本函数。
+    ⚠️ **由配置开关 `style_setting.reason_soft_cf` 控制**：当前交付配置为 `true`，
+    即按题目正文任务2(4) 启用差异化柔和背景条件格式（每类一色）。设为 `false` 时该列
+    **不设条件格式**、与同行其他单元格一致（只走斑马纹）。`stat_engine` 仅在开关为
+    `true` 时传入 `enable_cat_cond_format=True` 呼叫本函数。
 
     ⚠️ 颜色必须是 **8 位 ARGB**（`FF......`）：openpyxl 会把 6 位十六进制补成
     `00RRGGBB`，alpha=00 即完全透明，条件格式看起来“没生效”（露出斑马纹底色）。
