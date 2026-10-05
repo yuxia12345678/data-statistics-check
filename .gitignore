@@ -16,3 +16,8 @@ Thumbs.db
 
 # 运行成果/ 的按需子集导出（run_skill.py --only），留在本地不入库
 运行成果/*_*_*.xlsx
+
+# 历史快照 / 开发期临时目录（已下线链路，不随交付物流转）
+_recovery/
+_old_/
+.workbuddy/

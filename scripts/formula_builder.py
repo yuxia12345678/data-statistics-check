@@ -13,6 +13,10 @@ Excel 动态公式生成器 formula_builder
    而不是简单 MATCH 取第一条（后者在该行该字段为空时会取到空值）；
 5. 新增序号、全表求和/计数、全表去重计数等构造器。
 
+已知例外：组内「去重拼接」（TEXTJOIN+UNIQUE+FILTER）需要 Excel365 动态数组，
+低版本会 #NAME?，故该列由 stat_engine 用 pandas 算出文本后直接写入字面量，
+本模块**不提供**对应构造器（公式化例外，verify 的 R3a 仅断言数值格必须为公式）。
+
 说明：本模块只拼公式字符串，不做实际内存计算；实际期望值由 stat_engine 用 pandas
 独立算出，仅用于给公式注入缓存值，两条路径互不复用。
 """
@@ -155,17 +159,3 @@ def build_index_first_non_null(group_col: str, group_val_cell: str, fetch_col: s
     v = _rng(fetch_col, first_row, last_row, source_sheet)
     inner = 'INDEX((%s=%s)*(%s<>""),0)' % (g, group_val_cell, v)
     return '=IFERROR(INDEX(%s,MATCH(1,%s,0)),"")' % (v, inner)
-
-
-def build_textjoin_distinct_formula(group_col: str, group_val_cell: str, target_col: str,
-                                    sep: str = "、", source_sheet: str = RAW,
-                                    first_row: int = 3, last_row=None) -> str:
-    """
-    保留 Excel365 动态数组写法（TEXTJOIN+UNIQUE+FILTER）。
-
-    ⚠️ 本引擎**不调用**本函数：组内去重拼接由 pandas 算出文本后直接写入单元格
-    （与 analyze.py 的处理一致，登记为"公式化例外"），避免低版本 Excel 出现 #NAME?。
-    """
-    g = _rng(group_col, first_row, last_row, source_sheet)
-    t = _rng(target_col, first_row, last_row, source_sheet)
-    return '=TEXTJOIN("%s",TRUE,UNIQUE(FILTER(%s,%s=%s)))' % (sep, t, g, group_val_cell)

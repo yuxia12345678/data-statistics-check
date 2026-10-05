@@ -9,7 +9,7 @@ openpyxl 写公式时只写 <f>，不写 <v>（缓存值）。这样的文件：
   - 但被程序（openpyxl data_only=True / pandas）读取时全部是 None。
 
 评审若用程序读结果文件核对数值，就会读到一片空。因此本模块在保存后，
-把 analyze.py 独立算出的期望值以 <v> 形式写回 XML，使产物同时具备：
+把 stat_engine 用 pandas 独立算出的期望值以 <v> 形式写回 XML，使产物同时具备：
   1) 真实动态公式（满足"禁止硬编码、必须动态公式"）；
   2) 完整缓存值（满足程序化读取与复核）。
 
@@ -58,7 +58,7 @@ def _sheet_targets(zf):
 
 
 def _value_cell(value):
-    """把 Python 值转成 (t 属性或 None, 文本)"""
+    """把 Python 值转成 (t 属性或 None, 文本)。"""
     if value is None:
         return "e", "#N/A"
     if isinstance(value, bool):
@@ -68,7 +68,9 @@ def _value_cell(value):
             return "e", "#NUM!"
         return None, repr(float(value)) if isinstance(value, float) else str(value)
     text = str(value)
-    if text.startswith("#") and text.endswith(("!", "?", "A")) or text in ("#N/A",):
+    # Excel 错误文本（#REF!/#DIV/0!/#VALUE!/#NAME?/#N/A/#NULL!/#NUM!）：
+    # 均以 "#" 开头、以 "!"/"?"/"A" 结尾，统一按错误值 (t="e") 写入
+    if text.startswith("#") and text.endswith(("!", "?", "A")):
         return "e", text
     return "str", text
 
@@ -111,7 +113,8 @@ def inject_cached_values(xlsx_path, expected, set_full_recalc=True):
                         v = c.find(_tag("v"))
                         if v is None:
                             v = ET.SubElement(c, _tag("v"))
-                        # openpyxl 会写一个空的 <v/>，这里统一覆盖为真实缓存值
+                        # openpyxl 对公式格会写一个空的 <v/>；若源文件带缓存被整簿
+                        # 复制，<v> 里也可能残留旧值——统一覆盖为本次计算的缓存值
                         v.text = text
                         for child in list(v):
                             v.remove(child)
@@ -149,15 +152,22 @@ FORMULA_ERRORS = ("#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NULL!", "#N
 
 
 def scan_errors(xlsx_path):
-    """回读缓存值，扫描公式错误；返回 [(表名, 坐标, 错误文本)]"""
+    """回读缓存值，扫描公式错误；返回 [(表名, 坐标, 错误文本)]。
+
+    只读模式 + 显式 close：本函数只遍历单元格值，不需要可写工作簿，
+    且 Windows 下及时释放文件句柄，避免影响后续 verify.py / 网盘同步。
+    """
     from openpyxl import load_workbook
-    wb = load_workbook(xlsx_path, data_only=True)
+    wb = load_workbook(xlsx_path, data_only=True, read_only=True)
     found = []
-    for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                if isinstance(cell.value, str) and cell.value in FORMULA_ERRORS:
-                    found.append((ws.title, cell.coordinate, cell.value))
+    try:
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, str) and cell.value in FORMULA_ERRORS:
+                        found.append((ws.title, cell.coordinate, cell.value))
+    finally:
+        wb.close()
     return found
 
 

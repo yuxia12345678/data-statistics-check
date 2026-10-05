@@ -35,7 +35,12 @@
             "FFEAF1DD"
         ]
     },
-    "output_filename": "合同开票及回款核对表分析结果_1003测什么都对.xlsx",
+    "output_filename": "合同开票及回款核对表分析结果_姓名.xlsx",
+    "output": {
+        "input_dir": "输入",
+        "output_dir": "运行成果",
+        "keep_latest_only": true
+    },
     "output_sheet_names": {
         "raw_copy": "原始数据",
         "task1_result": "同合同号合并汇总",

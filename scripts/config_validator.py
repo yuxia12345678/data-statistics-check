@@ -4,10 +4,48 @@
 职责：
 1、加载JSON业务配置后，运行业务逻辑前做schema校验；
 2、检查必填节点、字段，提前抛出异常，避免中途运行报错；
-3、严格校验8个工作表名称，名字不匹配直接抛出ValueError；
+3、严格校验8个工作表名称与顺序，与配置声明的期望值不匹配直接抛出ValueError；
 4、只校验配置结构，不校验业务数据。
+
+可配置性说明（对应《竞赛须知》"Skill规则可配置要求"）
+----------------------------------------------------
+本模块**不写死任何业务表名**：期望的表名与顺序取自
+`profiles.<default_profile>.sheet_order`，与实际输出表名（`output_sheet_names` +
+`task2_special_agg.sheet_name` + `task3_multi_dim.overview_sheet_name` + `dim_list`）
+双向核对。因此换一套业务配置 = 换一套表名与规则，代码零改动。
+`DEFAULT_SPEC_SHEET_ORDER` 仅是配置未声明时的兜底（即本题《数据统计核对》规定的 8 张表）。
 """
 from typing import Dict, Any
+
+# 本题（数据统计核对）规定的 8 张工作表名称与顺序 —— 仅作**兜底默认值**。
+# 配置里 `profiles.<default_profile>.sheet_order` 一旦声明，期望值以配置为准。
+DEFAULT_SPEC_SHEET_ORDER = [
+    "原始数据",
+    "同合同号合并汇总",
+    "未回款原因分类汇总",
+    "统计总览",
+    "区域统计",
+    "部门统计",
+    "账龄统计",
+    "客户分类统计",
+]
+
+# 期望的工作表数量（题目硬性要求：必须包含 8 张独立工作表）
+EXPECT_SHEET_COUNT = 8
+
+
+def expected_sheet_order(cfg: Dict[str, Any]):
+    """返回期望的 8 张工作表**名称与顺序**。
+
+    唯一事实源：`profiles.<default_profile>.sheet_order`；
+    未声明时回落到 `DEFAULT_SPEC_SHEET_ORDER`（本题口径）。
+    """
+    profiles = cfg.get("profiles") or {}
+    prof = profiles.get(cfg.get("default_profile")) if cfg.get("default_profile") else None
+    if not isinstance(prof, dict):
+        prof = next((p for p in profiles.values() if isinstance(p, dict)), None) or {}
+    order = prof.get("sheet_order")
+    return list(order) if order else list(DEFAULT_SPEC_SHEET_ORDER)
 
 
 def validate_business_config(cfg: Dict[str, Any]) -> None:
@@ -49,18 +87,13 @@ def validate_business_config(cfg: Dict[str, Any]) -> None:
         if k not in t3:
             raise ValueError(f"task3_multi_dim缺失配置项：{k}")
 
-    # 工作表名校验：严格匹配题目8个sheet名称
-    expect_sheet_set = {
-        "原始数据",
-        "同合同号合并汇总",
-        "未回款原因分类汇总",
-        "统计总览",
-        "区域统计",
-        "部门统计",
-        "账龄统计",
-        "客户分类统计"
-    }
+    # 工作表名校验：期望值来自配置（profiles.<default_profile>.sheet_order），
+    # 而非写死在代码里 —— 换案例/换规则时随配置一起替换，代码零改动。
     out_sheet = cfg["output_sheet_names"]
+    for k in ["raw_copy", "task1_result"]:
+        if k not in out_sheet:
+            raise ValueError(f"output_sheet_names缺失配置项：{k}")
+
     sheet_collect = [
         out_sheet["raw_copy"],
         out_sheet["task1_result"],
@@ -69,10 +102,25 @@ def validate_business_config(cfg: Dict[str, Any]) -> None:
     ]
     for dim_item in t3["dim_list"]:
         sheet_collect.append(dim_item["sheet_name"])
-    actual_sheet_set = set(sheet_collect)
-    if actual_sheet_set != expect_sheet_set:
+
+    expect_sheet_order = expected_sheet_order(cfg)
+    if len(expect_sheet_order) != EXPECT_SHEET_COUNT:
         raise ValueError(
-            f"工作表名称错误！期望:{expect_sheet_set}\n实际:{actual_sheet_set}，名字、文字、大小写必须完全一致"
+            f"期望工作表数量错误！必须为 {EXPECT_SHEET_COUNT} 张，"
+            f"实际声明 {len(expect_sheet_order)} 张：{expect_sheet_order}"
+        )
+    if len(sheet_collect) != EXPECT_SHEET_COUNT or len(set(sheet_collect)) != EXPECT_SHEET_COUNT:
+        raise ValueError(
+            f"工作表数量或重名错误！必须为 {EXPECT_SHEET_COUNT} 张互不重名的表，实际:{sheet_collect}"
+        )
+    if sheet_collect != expect_sheet_order:
+        missing = [s for s in expect_sheet_order if s not in sheet_collect]
+        extra = [s for s in sheet_collect if s not in expect_sheet_order]
+        raise ValueError(
+            "工作表名称/顺序错误！名字、文字、大小写、先后顺序必须完全一致\n"
+            f"  期望:{expect_sheet_order}\n"
+            f"  实际:{sheet_collect}\n"
+            f"  缺失:{missing} 多余:{extra}"
         )
 
 

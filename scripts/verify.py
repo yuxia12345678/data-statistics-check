@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-交付前自检程序（独立复核，不复用 analyze.py 的任何计算结果）。
+交付前自检程序（独立复核，不复用生成侧 stat_engine 的任何计算结果）。
 
 用法：
     python3 verify.py --file 结果.xlsx --source 附件1-合同开票及回款核对表.xlsx
@@ -63,6 +63,7 @@ class _Config:
         names = cfg["output_sheet_names"]
         titles = cfg["sheet_titles"]
         t1 = cfg["task1_group_merge"]
+        t2 = cfg["task2_special_agg"]
         t3 = cfg["task3_multi_dim"]
 
         # ---- 工作表名、顺序与表头大标题
@@ -88,9 +89,40 @@ class _Config:
                               if r["agg_strategy"] == "distinct_join"), "；")
         self.OVERVIEW_LABELS = [m["output_field"] for m in t3["overview_metrics"]]
         self.FIELD_KIND = dict(cfg["field_kind"])
-        # 任务2「占比」分母定义：原始数据两列合计之差（合同金额合计 − 回款合计合计）。
+        # 任务2「占比」分母定义：原始数据两列合计之差（被减数合计 − 减数合计）。
         # 与生成侧 stat_engine._resolve_ratio_denominator 共用同一份配置。
-        self.T2_RATIO_DENOM = dict(cfg["task2_special_agg"].get("ratio_denominator") or {})
+        self.T2_RATIO_DENOM = dict(t2.get("ratio_denominator") or {})
+
+        # ---- 业务字段名（全部取自配置，代码中不出现任何业务字面量）----
+        self.PRIMARY_KEY = t1["primary_key"]
+        self.T2_GROUP_FIELD = t2["group_field"]
+        self.T2_AMOUNT_FIELD = t2["amount_field"]
+        self.T2_SORT_FIELD = t2.get("sort_by_field") or t2["amount_field"]
+        self.T2_RATIO_FIELD = t2.get("ratio_field_name", "占比")
+
+        # 维度表指标：求和项（保持 dim_metrics 声明顺序）+ 去重计数项 + 派生比率列表
+        self.DIM_SUM_OUTPUTS = [k for k, v in t3["dim_metrics"].items() if v[1] == "sum"]
+        self.DIM_SUM_SOURCE = {k: v[0] for k, v in t3["dim_metrics"].items()}
+        self.DIM_SUM_SOURCE_ORDER = [self.DIM_SUM_SOURCE[k] for k in self.DIM_SUM_OUTPUTS]
+        self.DIM_COUNT_OUTPUT = next((k for k, v in t3["dim_metrics"].items()
+                                      if v[1] == "nunique"), None)
+        self.DIM_COUNT_SOURCE = (t3["dim_metrics"][self.DIM_COUNT_OUTPUT][0]
+                                 if self.DIM_COUNT_OUTPUT else self.PRIMARY_KEY)
+        self.DIM_RATIOS = list(t3.get("derived_ratio_list") or [])
+        # 维度表排序字段
+        self.DIM_SORT_FIELD = t3.get("sort_by_field") or self.T2_SORT_FIELD
+
+        # 统计总览指标（顺序即输出行顺序）
+        self.OVERVIEW_METRICS = list(t3["overview_metrics"])
+
+        # 「原始数据」中需要汇总合计的全部源字段（合并求和 + 维度求和 + 总览求和 + 占比分母）
+        _totals = list(self.MERGE_SUM_FIELDS) + list(self.DIM_SUM_SOURCE_ORDER)
+        for _m in self.OVERVIEW_METRICS:
+            if _m.get("agg_operator") == "sum" and _m.get("source_field"):
+                _totals.append(_m["source_field"])
+        _totals.append(self.T2_AMOUNT_FIELD)
+        _totals += [v for v in self.T2_RATIO_DENOM.values() if v]
+        self.TOTAL_FIELDS = list(dict.fromkeys(_totals))
 
         # ---- 样式常量（全部取自 style_setting）
         self.TITLE_FILL = style["title_bg_color"]
@@ -122,6 +154,18 @@ class _Config:
                              % (key, "、".join(sorted(self.PROFILES))))
         return copy.deepcopy(self.PROFILES[key])
 
+    def dim_metric_source(self, output_field):
+        """维度指标输出名 → 其求和来源字段；「全局X」去掉「全局」前缀。"""
+        key = output_field[2:] if output_field.startswith("全局") else output_field
+        return self.DIM_SUM_SOURCE.get(key)
+
+    def dim_sort_output(self):
+        """维度表的排序输出列名（sort_by_field 指向的来源字段所对应的输出列）。"""
+        for o in self.DIM_SUM_OUTPUTS:
+            if self.DIM_SUM_SOURCE[o] == self.DIM_SORT_FIELD:
+                return o
+        return self.DIM_SUM_OUTPUTS[-1] if self.DIM_SUM_OUTPUTS else None
+
 
 C = None    # 由 main() 依据 --config 构建；其余函数在运行期引用
 
@@ -130,8 +174,15 @@ TOL = 1e-6
 
 # ================================================================ 源事实（独立重算）
 
-def source_facts(path, profile=None):
-    wb = load_workbook(path, data_only=True)
+def source_facts(path, profile=None, wb=None):
+    """从源文件独立重算全部期望事实（不复用生成侧 stat_engine 的任何结果）。
+
+    :param path: 源 xlsx 路径（wb 未传入时内部自行加载）
+    :param profile: 期望值口径（example profile 的空值填充口径在此生效）
+    :param wb: 可传入已加载的源工作簿复用，避免同一文件重复读盘
+    """
+    if wb is None:
+        wb = load_workbook(path, data_only=True)
     ws = None
     for w in wb.worksheets:
         if w.sheet_state == "visible":
@@ -141,9 +192,13 @@ def source_facts(path, profile=None):
     for r in range(1, min(ws.max_row, 20) + 1):
         vals = [str(ws.cell(r, c).value).strip() if ws.cell(r, c).value is not None else ""
                 for c in range(1, ws.max_column + 1)]
-        if "合同号" in vals:
+        if C.PRIMARY_KEY in vals:
             header_row = r
             break
+    if header_row is None:
+        raise ValueError("在源文件前 20 行内未找到业务主键字段「%s」，"
+                         "请检查 --source 与配置 task1_group_merge.primary_key 是否一致"
+                         % C.PRIMARY_KEY)
     col_of = {}
     for c in range(1, ws.max_column + 1):
         v = ws.cell(header_row, c).value
@@ -163,7 +218,12 @@ def source_facts(path, profile=None):
             raw.append((r, rec))
 
     def num(v):
-        return 0.0 if v in (None, "") else float(v)
+        if v in (None, ""):
+            return 0.0
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
 
     facts = {
         "header_row": header_row,
@@ -171,27 +231,24 @@ def source_facts(path, profile=None):
         "rows": len(raw),
         "raw_last_row": raw[-1][0] if raw else header_row,
         "totals": {f: sum(num(rec[f]) for _r, rec in raw)
-                   for f in C.MERGE_SUM_FIELDS if f in col_of},
-        "raw_cells": {},
+                   for f in C.TOTAL_FIELDS if f in col_of},
+        "raw": raw,
     }
-    for r, rec in raw:
-        for f, c in col_of.items():
-            facts["raw_cells"][(r, c)] = (rec[f], ws.cell(r, c).number_format)
 
     def key(rec, f):
         v = rec.get(f)
         return "" if v is None else (v if isinstance(v, str) else str(v)).strip()
 
-    # 合同号分组
+    # 按业务主键分组
     g = collections.OrderedDict()
     for r, rec in raw:
-        code = key(rec, "合同号")
+        code = key(rec, C.PRIMARY_KEY)
         d = g.setdefault(code, {"sums": collections.defaultdict(float), "rows": 0,
                                 "reasons": set()})
         d["rows"] += 1
         for f in C.MERGE_SUM_FIELDS:
             d["sums"][f] += num(rec.get(f))
-        _r = key(rec, "未回款原因分类")
+        _r = key(rec, C.T2_GROUP_FIELD)
         if _r:
             d["reasons"].add(_r)
     facts["contracts"] = g
@@ -207,27 +264,27 @@ def source_facts(path, profile=None):
                 continue
             d = b.setdefault(k, {"sums": collections.defaultdict(float), "codes": set(), "rows": 0})
             d["rows"] += 1
-            d["codes"].add(key(rec, "合同号"))
+            d["codes"].add(key(rec, C.PRIMARY_KEY))
             for f in C.MERGE_SUM_FIELDS:
                 d["sums"][f] += num(rec.get(f))
         dims[dim] = b
     facts["dims"] = dims
 
-    # 未回款原因分类（非空去重）
+    # 分类字段（非空去重）
     # example profile 会把空值填充为「未填写」，源事实必须按同一口径重算，
     # 否则 R5/R6 会拿 spec 口径去核 example 产物。
     fill_blank = bool(profile and profile.get("fill_blank_reason"))
     b = collections.OrderedDict()
     for r, rec in raw:
-        k = key(rec, "未回款原因分类")
+        k = key(rec, C.T2_GROUP_FIELD)
         if not k:
             if not fill_blank:
                 continue
             k = "未填写"
         d = b.setdefault(k, {"unpaid": 0.0, "codes": set(), "rows": 0})
-        d["unpaid"] += num(rec.get("开票未回款"))
+        d["unpaid"] += num(rec.get(C.T2_AMOUNT_FIELD))
         d["rows"] += 1
-        d["codes"].add(key(rec, "合同号"))
+        d["codes"].add(key(rec, C.PRIMARY_KEY))
     facts["reasons"] = b
     return facts
 
@@ -321,12 +378,21 @@ class Checker(object):
         self.profile = profile
         self.wbf = load_workbook(out_path, data_only=False)
         self.wbv = load_workbook(out_path, data_only=True)
-        self.srcf = source_facts(src_path, profile)
+        # 源工作簿只读盘一次：既供 source_facts 独立重算，也供 R2 的逐格比对使用
+        self.src_wb = load_workbook(src_path, data_only=True)
+        self.srcf = source_facts(src_path, profile, wb=self.src_wb)
         # 源文件存在带样式但无表头/无数据的"幽灵列"（本例 P..S），
         # 属于源文件自带状态；「原始数据」必须原样保留，故美化与核验都只覆盖有效列。
         self.raw_ncols = max(self.srcf["col_of"].values())
-        self.src_wb = load_workbook(src_path, data_only=True)
         self.results = []
+
+    def close(self):
+        """释放全部工作簿句柄（Windows 下避免影响后续流程 / 网盘同步）。"""
+        for wb in (self.wbf, self.wbv, self.src_wb):
+            try:
+                wb.close()
+            except Exception:
+                pass
 
     def add(self, rid, desc, ok, detail=""):
         self.results.append({"id": rid, "desc": desc, "ok": bool(ok), "detail": detail})
@@ -412,35 +478,28 @@ class Checker(object):
 
     # ---------- R3 禁止硬编码
     def r3_formulas(self):
+        """R3a 数值格必须是公式；R3b 公式格必须带缓存值；R3c 公式必须引用数据源。
+
+        前两项在**同一次**全表扫描里完成：公式视图（wbf）看公式文本，
+        数值视图（wbv）看缓存值，避免对同一批单元格扫两遍。
+        """
         stat_sheets = [s for s in self.profile["sheet_order"] if s != C.SHEET_RAW]
-        no_formula, no_cache, total = [], [], 0
+        no_cache, numeric_hardcoded = [], []
         for name in stat_sheets:
             wsf, wsv = self.wbf[name], self.wbv[name]
             for r in range(3, wsf.max_row + 1):
                 for c in range(1, wsf.max_column + 1):
-                    cell = wsf.cell(r, c)
-                    v = cell.value
-                    if v is None or v == "":
-                        continue
-                    # 维度名/合同号/指标名等键值是标识符，允许为字面量
-                    if isinstance(v, str) and not v.startswith("="):
-                        continue
-                    total += 1
-                    if not (isinstance(v, str) and v.startswith("=")):
-                        no_formula.append((name, cell.coordinate, repr(v)[:40]))
-                    if wsv.cell(r, c).value is None:
-                        no_cache.append((name, cell.coordinate))
-        # 数值列必须是公式：逐列判定
-        numeric_hardcoded = []
-        for name in stat_sheets:
-            wsf, wsv = self.wbf[name], self.wbv[name]
-            for r in range(3, wsf.max_row + 1):
-                for c in range(1, wsf.max_column + 1):
+                    f = wsf.cell(r, c).value
                     cached = wsv.cell(r, c).value
-                    if isinstance(cached, (int, float)) and cached not in (None,):
-                        f = wsf.cell(r, c).value
-                        if not (isinstance(f, str) and f.startswith("=")):
-                            numeric_hardcoded.append((name, wsf.cell(r, c).coordinate, cached))
+                    is_formula = isinstance(f, str) and f.startswith("=")
+                    # R3b：公式格在缓存视图里必须有值；纯文本键值（维度名/合同号/
+                    # 指标名等标识符，允许为字面量）与空格不算缺缓存
+                    if cached is None and f not in (None, "") \
+                            and (not isinstance(f, str) or is_formula):
+                        no_cache.append((name, wsf.cell(r, c).coordinate))
+                    # R3a：缓存值是数值的格子必须是公式（禁止硬编码数值）
+                    if isinstance(cached, (int, float)) and not is_formula:
+                        numeric_hardcoded.append((name, wsf.cell(r, c).coordinate, cached))
         self.add("R3a", "全部数值单元格均为动态公式（禁止硬编码）",
                  not numeric_hardcoded, "硬编码 %d 处 %s" % (len(numeric_hardcoded),
                                                           numeric_hardcoded[:6]))
@@ -465,7 +524,7 @@ class Checker(object):
                     if not (isinstance(v, str) and v.startswith("=")):
                         continue
                     body = v[1:]
-                    if "原始数据" in body:
+                    if C.SHEET_RAW in body:
                         continue
                     if not any(p.match(body) for p in self.LOCAL_OK):
                         self._bad_formula = (name, cell.coordinate, body[:60])
@@ -499,7 +558,8 @@ class Checker(object):
     def r5_rowcounts(self):
         f = self.srcf
         ws = self.wbv[C.SHEET_MERGE]
-        self.add("R5a", "合并表行数 = 不同合同号数", ws.max_row - 2 == f["contract_count"],
+        self.add("R5a", "合并表行数 = 不同%s数" % C.PRIMARY_KEY,
+                 ws.max_row - 2 == f["contract_count"],
                  "结果=%d 期望=%d" % (ws.max_row - 2, f["contract_count"]))
         for sheet, dim in C.DIMENSIONS:
             ws = self.wbv[sheet]
@@ -507,27 +567,29 @@ class Checker(object):
                      ws.max_row - 2 == len(f["dims"][dim]),
                      "结果=%d 期望=%d" % (ws.max_row - 2, len(f["dims"][dim])))
         ws = self.wbv[C.SHEET_OVERVIEW]
-        self.add("R5-总览", "统计总览为 8 项全局指标", ws.max_row - 2 == 8,
-                 "结果=%d" % (ws.max_row - 2))
+        n_ov = len(C.OVERVIEW_METRICS)
+        self.add("R5-总览", "统计总览为 %d 项全局指标" % n_ov, ws.max_row - 2 == n_ov,
+                 "结果=%d 期望=%d" % (ws.max_row - 2, n_ov))
         ws = self.wbv[C.SHEET_REASON]
-        self.add("R5-原因", "未回款原因分类汇总表行数 = 非空去重分类数",
+        self.add("R5-原因", "%s 汇总表行数 = 非空去重分类数" % C.T2_GROUP_FIELD,
                  ws.max_row - 2 == len(f["reasons"]),
                  "结果=%d 期望=%d（源字段全为空时为 0）" % (ws.max_row - 2, len(f["reasons"])))
 
     # ---------- R6 数值正确
     def r6_values(self):
         f = self.srcf
-        # 合并表：按合同号核对 5 个求和字段
+        pk = C.PRIMARY_KEY
+        # 合并表：按业务主键核对全部求和字段
         ws = self.wbv[C.SHEET_MERGE]
         headers = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
         idx = {h: i + 1 for i, h in enumerate(headers)}
         bad = []
         bad_txt = []
         for r in range(3, ws.max_row + 1):
-            code = ws.cell(r, idx["合同号"]).value
+            code = ws.cell(r, idx[pk]).value
             g = f["contracts"].get(str(code).strip())
             if g is None:
-                bad.append((r, code, "源中不存在该合同号"))
+                bad.append((r, code, "源中不存在该%s" % pk))
                 continue
             for fld in C.MERGE_SUM_FIELDS:
                 if fld not in idx:
@@ -535,55 +597,92 @@ class Checker(object):
                 if not close(ws.cell(r, idx[fld]).value, g["sums"][fld]):
                     bad.append((r, code, fld, ws.cell(r, idx[fld]).value, g["sums"][fld]))
             # 备注文本字段：按配置分隔符去重拼接（题目要求“统一分隔符”，集合口径比对）
-            if "未回款原因分类" in idx:
-                _v = ws.cell(r, idx["未回款原因分类"]).value
+            if C.T2_GROUP_FIELD in idx:
+                _v = ws.cell(r, idx[C.T2_GROUP_FIELD]).value
                 txt = "" if _v is None else str(_v).strip()
                 got = {t for t in txt.split(C.JOIN_SEP) if t} if txt else set()
                 if got != g["reasons"]:
                     bad_txt.append((r, code, txt, sorted(g["reasons"])))
-        self.add("R6a", "合并表 5 个数值字段求和正确 + 「未回款原因分类」按「%s」去重拼接与源一致（%d 合同）"
-                 % (C.JOIN_SEP, f["contract_count"]),
+        self.add("R6a", "合并表 %d 个数值字段求和正确 + 「%s」按「%s」去重拼接与源一致（%d 个%s）"
+                 % (len(C.MERGE_SUM_FIELDS), C.T2_GROUP_FIELD, C.JOIN_SEP,
+                    f["contract_count"], pk),
                  not bad and not bad_txt,
                  "数值差异 %d 处 %s；拼接差异 %d 处 %s"
                  % (len(bad), bad[:5], len(bad_txt), bad_txt[:3]))
 
-        # 维度表 7 项指标
+        # 维度表：按配置的 dim_metrics / derived_ratio_list 逐列核对
         for sheet, dim in C.DIMENSIONS:
             ws = self.wbv[sheet]
             headers = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
+            n_metrics = max(ws.max_column - 2, 0)
             bad = []
-            total_amt = f["totals"]["合同金额"]
             for r in range(3, ws.max_row + 1):
                 k = str(ws.cell(r, 2).value).strip()
                 d = f["dims"][dim].get(k)
                 if d is None:
                     bad.append((r, k, "源中无此维度值"))
                     continue
-                exp = [d["sums"]["合同金额"], d["sums"]["开票金额"], d["sums"]["回款合计"],
-                       d["sums"]["开票未回款"], len(d["codes"]),
-                       (d["sums"]["回款合计"] / d["sums"]["合同金额"]) if d["sums"]["合同金额"] else None,
-                       (d["sums"]["开票未回款"] / total_amt) if total_amt else None]
-                got = [ws.cell(r, c).value for c in range(3, 10)]
+                exp = [d["sums"][src] for src in C.DIM_SUM_SOURCE_ORDER]
+                exp.append(len(d["codes"]))
+                for ratio in C.DIM_RATIOS:
+                    num_src = C.dim_metric_source(ratio.get("numerator_field", ""))
+                    _den_out = ratio.get("denominator_field", "")
+                    if _den_out.startswith("全局"):
+                        den_src = C.dim_metric_source(_den_out)
+                        den = f["totals"].get(den_src)
+                    else:
+                        den_src = C.dim_metric_source(_den_out)
+                        den = d["sums"].get(den_src)
+                    nv = d["sums"].get(num_src) if num_src else None
+                    exp.append((nv / den) if (nv is not None and den) else None)
+                got = [ws.cell(r, c).value for c in range(3, 3 + len(exp))]
                 for i, (a, b) in enumerate(zip(got, exp)):
                     if not close(a, b):
-                        bad.append((sheet, r, k, headers[i + 2], a, b))
-            self.add("R6-" + dim, "%s 全部 7 项指标与源事实一致" % sheet, not bad,
+                        bad.append((sheet, r, k, headers[i + 2] if i + 2 < len(headers) else i + 2, a, b))
+                if n_metrics != len(exp):
+                    bad.append((sheet, "列数不匹配", n_metrics, len(exp)))
+            self.add("R6-" + dim, "%s 全部 %d 项指标与源事实一致" % (sheet, len(exp)), not bad,
                      "差异 %d 处 %s" % (len(bad), bad[:5]))
 
-        # 统计总览
+        # 统计总览：按 overview_metrics 逐项重算
         ws = self.wbv[C.SHEET_OVERVIEW]
-        exp = [f["totals"]["合同金额"], f["totals"]["开票金额"], f["totals"]["回款合计"],
-               f["totals"]["开票未回款"],
-               f["totals"]["回款合计"] / f["totals"]["合同金额"],
-               f["contract_count"], f["rows"], len(f["reasons"])]
-        got = [ws.cell(3 + i, 2).value for i in range(8)]
-        bad = [(C.OVERVIEW_LABELS[i], got[i], exp[i]) for i in range(8) if not close(got[i], exp[i])]
-        self.add("R6-总览", "统计总览 8 项指标与源事实一致", not bad, "差异 %s" % bad)
+        exp = []
+        for m in C.OVERVIEW_METRICS:
+            op = m.get("agg_operator")
+            src = m.get("source_field") or ""
+            if op == "sum":
+                exp.append(f["totals"].get(src))
+            elif op == "nunique":
+                if src == C.PRIMARY_KEY:
+                    exp.append(f["contract_count"])
+                elif src == C.T2_GROUP_FIELD:
+                    exp.append(len(f["reasons"]))
+                else:
+                    exp.append(len({str(rec.get(src)).strip()
+                                    for _r, rec in f["raw"] if rec.get(src) not in (None, "")}))
+            elif op == "count_rows":
+                exp.append(f["rows"])
+            elif op == "ratio":
+                _num = next((x["output_field"] for x in C.OVERVIEW_METRICS
+                             if x.get("output_field") == m.get("numerator")), None)
+                _den = next((x["output_field"] for x in C.OVERVIEW_METRICS
+                             if x.get("output_field") == m.get("denominator")), None)
+                _i_num = C.OVERVIEW_LABELS.index(_num) if _num in C.OVERVIEW_LABELS else None
+                _i_den = C.OVERVIEW_LABELS.index(_den) if _den in C.OVERVIEW_LABELS else None
+                nv = exp[_i_num] if _i_num is not None and _i_num < len(exp) else None
+                dv = exp[_i_den] if _i_den is not None and _i_den < len(exp) else None
+                exp.append((nv / dv) if (nv is not None and dv) else None)
+            else:
+                exp.append(None)
+        got = [ws.cell(3 + i, 2).value for i in range(len(C.OVERVIEW_LABELS))]
+        bad = [(C.OVERVIEW_LABELS[i], got[i], exp[i]) for i in range(len(exp))
+               if not close(got[i], exp[i])]
+        self.add("R6-总览", "统计总览 %d 项指标与源事实一致" % len(exp), not bad, "差异 %s" % bad)
 
-        # 原因表
+        # 分类表
         ws = self.wbv[C.SHEET_REASON]
         bad = []
-        # 占比分母 = 原始数据「合同金额」合计 −「回款合计」合计
+        # 占比分母 = 原始数据「被减数」合计 −「减数」合计
         # （口径来自配置 task2_special_agg.ratio_denominator，两字段直接取自数据源）
         _dn = C.T2_RATIO_DENOM
         _minuend = f["totals"].get(_dn.get("minuend_field", ""), 0.0)
@@ -599,26 +698,32 @@ class Checker(object):
                            (6, d["unpaid"] / reason_denom if reason_denom else None)):
                 if not close(ws.cell(r, col).value, e):
                     bad.append((r, k, col, ws.cell(r, col).value, e))
-        self.add("R6-原因", "未回款原因分类汇总 4 项指标与源事实一致（占比分母 = 合同金额合计 − 回款合计）",
+        self.add("R6-原因", "%s 汇总 4 项指标与源事实一致（占比分母 =「%s」合计 −「%s」合计）"
+                 % (C.T2_GROUP_FIELD, _dn.get("minuend_field", ""), _dn.get("subtrahend_field", "")),
                  not bad, "差异 %s（源字段全空时本项为空表，自动通过）" % bad[:5])
 
     # ---------- R7 排序
     def r7_order(self):
         for sheet, dim in C.DIMENSIONS:
             ws = self.wbv[sheet]
-            vals = [ws.cell(r, 6).value or 0 for r in range(3, ws.max_row + 1)]
-            self.add("R7-" + dim, "%s 按开票未回款降序" % sheet,
+            heads = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
+            _sort_out = C.dim_sort_output()
+            sc = (heads.index(_sort_out) + 1) if _sort_out in heads else 6
+            vals = [ws.cell(r, sc).value or 0 for r in range(3, ws.max_row + 1)]
+            self.add("R7-" + dim, "%s 按%s降序" % (sheet, C.DIM_SORT_FIELD),
                      all(vals[i] >= vals[i + 1] for i in range(len(vals) - 1)),
                      "首尾=%s/%s" % (vals[:1], vals[-1:]))
         ws = self.wbv[C.SHEET_REASON]
-        vals = [ws.cell(r, 3).value or 0 for r in range(3, ws.max_row + 1)]
-        self.add("R7-原因", "未回款原因分类汇总按开票未回款降序",
+        heads = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
+        sc = (heads.index(C.T2_SORT_FIELD) + 1) if C.T2_SORT_FIELD in heads else 3
+        vals = [ws.cell(r, sc).value or 0 for r in range(3, ws.max_row + 1)]
+        self.add("R7-原因", "%s 汇总按%s降序" % (C.SHEET_REASON, C.T2_SORT_FIELD),
                  all(vals[i] >= vals[i + 1] for i in range(len(vals) - 1)), "行数=%d" % len(vals))
         ws = self.wbv[C.SHEET_MERGE]
         heads = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
-        key_col = heads.index("合同号") + 1
+        key_col = heads.index(C.PRIMARY_KEY) + 1
         vals = [str(ws.cell(r, key_col).value or "") for r in range(3, ws.max_row + 1)]
-        self.add("R7-合并", "合并表按合同号升序（从小到大）",
+        self.add("R7-合并", "合并表按%s升序（从小到大）" % C.PRIMARY_KEY,
                  all(vals[i] <= vals[i + 1] for i in range(len(vals) - 1)),
                  "行数=%d" % len(vals))
         # 序号连续
@@ -807,7 +912,7 @@ class Checker(object):
         n = len(self.srcf["reasons"])
         if not C.REASON_SOFT_CF:
             # 配置关闭：该列不设条件格式，与同行其他单元格一样只走斑马纹（见 R11）。
-            self.add("R16", "未回款分类柔和背景条件格式：配置已关闭（reason_soft_cf=false）",
+            self.add("R16", "%s 柔和背景条件格式：配置已关闭（reason_soft_cf=false）" % C.T2_GROUP_FIELD,
                      len(rules) == 0,
                      "规则数应为 0（实际 %d）；该列底色应等于同行斑马纹" % len(rules))
             return
@@ -823,11 +928,11 @@ class Checker(object):
             fills.append(rgb)
         opaque = all(f and len(f) == 8 and f.startswith("FF") for f in fills)
         if n == 0:
-            self.add("R16", "未回款分类差异化柔和背景条件格式",
+            self.add("R16", "%s 差异化柔和背景条件格式" % C.T2_GROUP_FIELD,
                      len(rules) == 0,
-                     "源「未回款原因分类」全空 → 分类数=0，规则数应为 0（实际 %d）" % len(rules))
+                     "源「%s」全空 → 分类数=0，规则数应为 0（实际 %d）" % (C.T2_GROUP_FIELD, len(rules)))
         else:
-            self.add("R16", "未回款分类差异化柔和背景条件格式（%d 类 %d 条规则）" % (n, len(rules)),
+            self.add("R16", "%s 差异化柔和背景条件格式（%d 类 %d 条规则）" % (C.T2_GROUP_FIELD, n, len(rules)),
                      len(rules) >= n and opaque,
                      "规则数=%d 分类数=%d 填充=%s（须为 8 位 FF 开头的不透明 ARGB）"
                      % (len(rules), n, fills[:4]))
@@ -843,7 +948,7 @@ class Checker(object):
         ws = self.wbf[C.SHEET_REASON]
         if not C.REASON_SOFT_CF:
             n_any = sum(len(rng.rules) for rng in ws.conditional_formatting)
-            self.add("R17", "未回款分类条件格式公式锚定区间首行：配置已关闭（无规则）",
+            self.add("R17", "%s 条件格式公式锚定区间首行：配置已关闭（无规则）" % C.T2_GROUP_FIELD,
                      n_any == 0, "规则数应为 0（实际 %d）" % n_any)
             return
         n_rules, bad = 0, []
@@ -859,10 +964,10 @@ class Checker(object):
                         bad.append((str(f), "锚点行 %s ≠ 区间首行 %d" % (m.group(2), base)))
         n = len(self.srcf["reasons"])
         if n == 0:
-            self.add("R17", "未回款分类条件格式公式锚定区间首行", n_rules == 0,
+            self.add("R17", "%s 条件格式公式锚定区间首行" % C.T2_GROUP_FIELD, n_rules == 0,
                      "分类数=0 → 规则数应为 0（实际 %d）" % n_rules)
         else:
-            self.add("R17", "未回款分类条件格式公式锚定区间首行（EXACT($B3,…)）",
+            self.add("R17", "%s 条件格式公式锚定区间首行（EXACT($B3,…)）" % C.T2_GROUP_FIELD,
                      not bad and n_rules >= n,
                      "规则数=%d 分类数=%d 不合规 %d 处 %s" % (n_rules, n, len(bad), bad[:3]))
 
@@ -922,7 +1027,10 @@ def main():
 
     profile = C.get_profile(args.profile)
     ck = Checker(args.file, args.source, profile)
-    results = ck.run_all()
+    try:
+        results = ck.run_all()
+    finally:
+        ck.close()      # 无论通过与否都释放工作簿句柄
     passed = sum(1 for r in results if r["ok"])
     report = {
         "file": os.path.abspath(args.file),

@@ -10,14 +10,14 @@
   "source_columns": 15,
   "records": 1000,
   "contract_count": 463,
-  "reason_category_count": 4,
+  "reason_category_count": 0,
   "dim_category_counts": {
     "区域": 34,
     "部门": 10,
     "账龄": 3,
     "客户分类": 8
   },
-  "output": "E:\\.agents\\data-statistics-check\\运行成果\\合同开票及回款核对表分析结果_1003测什么都对.xlsx",
+  "output": "E:\\.agents\\data-statistics-check\\运行成果\\合同开票及回款核对表分析结果_姓名.xlsx",
   "sheet_order": [
     "原始数据",
     "同合同号合并汇总",
@@ -29,11 +29,10 @@
     "客户分类统计"
   ],
   "raw_sheet": "零美化：仅改表名；值/行列顺序/数字格式/填充·字体·边框·对齐/列宽/冻结全部与源表逐格一致",
-  "formula_cells_written": 6024,
-  "cached_values_injected": 6024,
+  "formula_cells_written": 6004,
+  "cached_values_injected": 6004,
   "cached_by_sheet": {
     "同合同号合并汇总": 5556,
-    "未回款原因分类汇总": 20,
     "区域统计": 272,
     "部门统计": 80,
     "账龄统计": 24,
@@ -42,6 +41,6 @@
   },
   "formula_errors": [],
   "formula_error_count": 0,
-  "elapsed_sec": 2.19,
+  "elapsed_sec": 2.91,
   "status": "success"
 }

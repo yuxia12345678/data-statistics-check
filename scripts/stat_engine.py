@@ -27,10 +27,11 @@ import time
 
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 
-from agg_strategy import AGG_STRATEGY_REGISTRY
+from agg_strategy import (
+    AGG_STRATEGY_REGISTRY, distinct_join, first_non_null, is_blank, text_of,
+)
 from cached_values import inject_cached_values, scan_errors
 from config_validator import validate_business_config
 from excel_styler import apply_sheet_format
@@ -46,37 +47,8 @@ from formula_builder import (
 AGG_SUM = AGG_STRATEGY_REGISTRY["sum"]
 AGG_NUNIQUE = AGG_STRATEGY_REGISTRY["nunique"]
 
-
-def _is_missing(v) -> bool:
-    """
-    是否为“缺失值”：None / 浮点 NaN / pandas NaT / pd.NA。
-
-    源表里的空单元格经 pandas 读入后是 `float('nan')`，它**不是** None、也不是空串。
-    若只按“None 或空白串”判空，`str(nan)` 会变成字面量 "nan" 混进结果
-    （例如合并表「未回款原因分类」的去重拼接），因此必须单独识别。
-    """
-    if v is None:
-        return True
-    try:
-        return bool(pd.isna(v))
-    except (TypeError, ValueError):     # 数组 / 列表等 pd.isna 返回数组的情形
-        return False
-
-
-def _blank(v) -> bool:
-    """空值判定：None、NaN/NaT、纯空白字符串均视为空。"""
-    if v is None:
-        return True
-    if isinstance(v, str):
-        return not v.strip()
-    return _is_missing(v)
-
-
-def _text(v) -> str:
-    """保留源文本原样（含前导零），仅用于比较/分组键；缺失值返回空串。"""
-    if _blank(v):
-        return ""
-    return (v if isinstance(v, str) else str(v)).strip()
+# 空白判定（is_blank）与文本规范化（text_of）已下沉到 agg_strategy 统一实现——
+# 公式缓存值、分组键、排序键共用同一语义，避免两套判空逻辑漂移。
 
 
 class GeneralStatSkillEngine:
@@ -118,11 +90,14 @@ class GeneralStatSkillEngine:
         ws = wb[self.input_cfg["sheet_name"]]
         self.field_to_col = self.build_header_col_mapping(ws, header_row)
 
-        # 动态探测数据末行（最后一行有任意非空单元格）
+        # 动态探测数据末行（最后一行有任意非空单元格）。
+        # 用 iter_rows 单遍扫描代替逐格 ws.cell(r, c)：后者每次调用都要做一次
+        # 坐标解析，在千行级源表上是读入阶段的主要开销；源文件自带的
+        # 「幽灵列」（有样式无值）不影响判定（value 均为 None）。
         last = header_row
-        for r in range(header_row + 1, ws.max_row + 1):
-            if any(ws.cell(r, c).value not in (None, "") for c in range(1, ws.max_column + 1)):
-                last = r
+        for row in ws.iter_rows(min_row=header_row + 1):
+            if any(cell.value not in (None, "") for cell in row):
+                last = row[0].row
         self.last_row = last
         # 运行回执：源表侧的客观事实
         self.report.update({
@@ -178,33 +153,32 @@ class GeneralStatSkillEngine:
         if sort_field and sort_field in self.df_raw.columns:
             grouped = self.df_raw.groupby(dim_field)[sort_field].sum()
             grouped = grouped.sort_values(ascending=False, kind="stable")
-            return [k for k in grouped.index.tolist() if not _blank(k)]
+            return [k for k in grouped.index.tolist() if not is_blank(k)]
         vals = self.df_raw[dim_field].dropna().unique().tolist()
-        return sorted([v for v in vals if not _blank(v)])
+        return sorted([v for v in vals if not is_blank(v)])
+
+    def _resolve_global_base_field(self, den_field: str) -> str:
+        """把「全局<指标名>」形式的**跨维度分母**解析回它的**源字段**（零硬编码）。
+
+        例：`den_field="全局总合同金额"` → 去掉「全局」→ 在 `dim_metrics` 里按输出名
+        反查 `source_field` → `"合同金额"`。换一套业务字段（如「订单金额」）时只改配置，
+        代码无需改动。
+
+        :param den_field: 形如「全局总合同金额」的派生比率分母字段名
+        :return: 对应的源字段名；无法解析时回落到任务2 的占比分母被减数
+        """
+        key = den_field[2:] if den_field.startswith("全局") else den_field
+        setting = (self.t3_cfg.get("dim_metrics") or {}).get(key)
+        if setting:
+            return setting[0]
+        den_cfg = self.t2_cfg.get("ratio_denominator") or {}
+        return den_cfg.get("minuend_field", "")
 
     def get_contract_list(self) -> list:
         """合同号列表：按合同号升序（从小到大；按文本比较，结果稳定可复现）。"""
         pk = self.t1_cfg["primary_key"]
         vals = self.df_raw[pk].dropna().unique().tolist()
-        return sorted([v for v in vals if not _blank(v)], key=_text)
-
-    def _first_non_null(self, series):
-        """分组取第一条非空有效值（空字符串视为空）。"""
-        for v in series.tolist():
-            if not _blank(v):
-                return v
-        return ""
-
-    def _distinct_join(self, series, sep: str) -> str:
-        """分组非空内容去重后拼接（保持首次出现顺序）。"""
-        out = []
-        for v in series.tolist():
-            if _blank(v):
-                continue
-            t = _text(v)
-            if t not in out:
-                out.append(t)
-        return sep.join(out)
+        return sorted([v for v in vals if not is_blank(v)], key=text_of)
 
     # ============================================================ 期望值记录
 
@@ -231,33 +205,38 @@ class GeneralStatSkillEngine:
         contract_list = self.get_contract_list()
         self.report["contract_count"] = len(contract_list)
 
+        # 循环外预计算每条规则的（字段名, 策略, Excel 列字母, 拼接分隔符）：
+        # 下面是「合同数 × 规则数」的双重循环，配置查找与表头定位都提到循环外只做一次
+        rule_plans = [
+            (rule["field_name"], rule["agg_strategy"],
+             self._col(rule["field_name"]), rule.get("join_separator", "；"))
+            for rule in rules
+        ]
+
         for i, code in enumerate(contract_list):
             row = self.first_row + i
             g = grouped.get_group(code)
             ref = '"%s"' % code
             self._put(ws, row, 1, build_seq_formula(self.first_row - 1), i + 1)
-            for j, rule in enumerate(rules, start=2):
-                field = rule["field_name"]
-                strat = rule["agg_strategy"]
-                col = self._col(field)
+            for j, (field, strat, col, join_sep) in enumerate(rule_plans, start=2):
                 if strat == "sum":
                     self._put(ws, row, j,
                               build_sumifs_formula(col, {pk_col: ref},
                                                    first_row=self.first_row, last_row=self.last_row),
                               float(AGG_SUM(g[field])))
                 elif strat == "first_non_null":
-                    exp = self._first_non_null(g[field])
+                    exp = first_non_null(g[field])
                     self._put(ws, row, j,
                               build_index_first_non_null(pk_col, ref, col,
                                                          first_row=self.first_row,
                                                          last_row=self.last_row),
-                              exp if not _blank(exp) else "")
+                              exp if not is_blank(exp) else "")
                 elif strat == "distinct_join":
-                    sep = rule.get("join_separator", "；")
-                    text = self._distinct_join(g[field], sep)
+                    text = distinct_join(g[field], join_sep)
                     # 去重拼接是文本聚合：Excel 无稳定的非数组写法
-                    # （TEXTJOIN/UNIQUE/FILTER 需 Excel365），故直接写入结果文本，
-                    # 登记为公式化例外（与 analyze.py 的处理一致）。
+                    # （TEXTJOIN/UNIQUE/FILTER 需 Excel365），故直接写入结果文本；
+                    # verify.py 的 R3a 仅对「数值单元格必须是公式」做断言，
+                    # 文本字面量不在其列（公式化例外）。
                     self._put(ws, row, j, text, text)
                 elif strat == "value":
                     self._put(ws, row, j, code, None)
@@ -323,17 +302,25 @@ class GeneralStatSkillEngine:
         grouped = self.df_raw.groupby(group_field, sort=False)
         self.report["reason_category_count"] = len(group_val_list)
 
+        # 循环外预计算每个指标的（源字段, 聚合类型, Excel 列字母），行循环内直接取用
+        metric_plans = [(src_field, agg_type, self._col(src_field))
+                        for src_field, agg_type in metrics.values()]
+
+        # 「占比」列号（表尾第 1 列）与分子列号（第 3 列 = metrics 首项的金额求和列）
+        # 均与行无关，循环外确定一次
+        ratio_col = len(header_list)
+        numerator_col_letter = get_column_letter(3)
+
         for i, g_val in enumerate(group_val_list):
             row = self.first_row + i
             g = grouped.get_group(g_val)
             ref = '"%s"' % g_val
             self._put(ws, row, 1, build_seq_formula(self.first_row - 1), i + 1)
             self._put(ws, row, 2, g_val, None)
-            for j, (_, setting) in enumerate(metrics.items(), start=3):
-                src_field, agg_type = setting
+            for j, (src_field, agg_type, src_col) in enumerate(metric_plans, start=3):
                 if agg_type == "sum":
                     self._put(ws, row, j,
-                              build_sumifs_formula(self._col(src_field), {group_col: ref},
+                              build_sumifs_formula(src_col, {group_col: ref},
                                                    first_row=self.first_row, last_row=self.last_row),
                               float(AGG_SUM(g[src_field])))
                 elif agg_type == "nunique":
@@ -353,11 +340,10 @@ class GeneralStatSkillEngine:
                     raise ValueError("【Task2】不支持的聚合策略：%s" % agg_type)
             # 占比 = 本类开票未回款 / (原始数据「合同金额」合计 −「回款合计」合计)
             # 分母口径由配置 task2_special_agg.ratio_denominator 驱动
-            ratio_col = len(header_list)
             unpaid = float(AGG_SUM(g[amount_field]))
             self._put(ws, row, ratio_col,
                       build_divide_by_columns_diff_formula(
-                          "%s%d" % (get_column_letter(3), row),
+                          "%s%d" % (numerator_col_letter, row),
                           den_min_col, den_sub_col,
                           first_row=self.first_row, last_row=self.last_row),
                       (unpaid / den_value) if den_value else None)
@@ -395,11 +381,27 @@ class GeneralStatSkillEngine:
         reason_col = self._col(reason_field)
         serial_col = self._col(self.t1_cfg["new_serial_name"])
 
-        total_amount = float(AGG_SUM(self.df_raw["合同金额"]))
-        total_received = float(AGG_SUM(self.df_raw["回款合计"]))
+        # 「整体回款率」分子/分母的**源字段**由配置反查得到，零硬编码：
+        # overview_metrics 中 agg_operator=="ratio" 的 numerator/denominator 是「输出字段名」，
+        # 回到同一列表按 output_field 取其 source_field，即得「回款合计」「合同金额」。
+        # 换一套业务字段（如订单金额 / 已结算金额）时，只改配置即可。
+        _src_of = {it["output_field"]: it.get("source_field", "")
+                   for it in self.t3_cfg["overview_metrics"]}
+        _ratio_item = next((it for it in self.t3_cfg["overview_metrics"]
+                            if it.get("agg_operator") == "ratio"), None)
+        recv_field = _src_of.get(_ratio_item.get("numerator"), "") if _ratio_item else ""
+        amt_field = _src_of.get(_ratio_item.get("denominator"), "") if _ratio_item else ""
+        if not (recv_field and amt_field):
+            # 兜底：任务2 声明的占比分母（minuend − subtrahend）
+            _rd = self.t2_cfg.get("ratio_denominator") or {}
+            amt_field = _rd.get("minuend_field", "")
+            recv_field = _rd.get("subtrahend_field", "")
+
+        total_amount = float(AGG_SUM(self.df_raw[amt_field]))
+        total_received = float(AGG_SUM(self.df_raw[recv_field]))
         distinct_contracts = int(AGG_NUNIQUE(self.df_raw[pk]))
         non_blank_reasons = self.df_raw.loc[
-            ~self.df_raw[reason_field].apply(_blank), reason_field]
+            ~self.df_raw[reason_field].apply(is_blank), reason_field]
         reason_count = int(AGG_NUNIQUE(non_blank_reasons)) if len(non_blank_reasons) else 0
 
         cell_row_of = {}
@@ -465,8 +467,37 @@ class GeneralStatSkillEngine:
         derived = t3["derived_ratio_list"]
         pk_field = self.t1_cfg["primary_key"]
         pk_col = self._col(pk_field)
-        total_amount = float(AGG_SUM(self.df_raw["合同金额"]))
-        amount_col = self._col("合同金额")
+
+        # ---- 循环外预计算 ----
+        # 4 个维度表共用同一套 dim_metrics / derived_ratio_list，指标列与派生列的
+        # 列位 / 列字母只取决于表头结构、与具体维度无关，全部算一次复用；
+        # 「全局<指标>」分母的源字段与全表合计也不随维度/行变化，同样只算一次。
+        metric_keys = list(t3["dim_metrics"].keys())
+        metric_start_col = 3                       # 第 1 列序号、第 2 列维度值，指标从第 3 列起
+        metric_plans = [
+            (out_field, src_field, agg_type, self._col(src_field))
+            for out_field, (src_field, agg_type) in t3["dim_metrics"].items()
+        ]
+        first_ratio_col = metric_start_col + len(metric_keys)   # 派生比率列起始列号（1 基）
+        ratio_plans = []
+        for k, ratio_cfg in enumerate(derived):
+            num_field = ratio_cfg["numerator_field"]
+            den_field = ratio_cfg["denominator_field"]
+            plan = {
+                "col": first_ratio_col + k,
+                "num_field": num_field,
+                "num_let": get_column_letter(metric_keys.index(num_field) + metric_start_col),
+            }
+            if str(den_field).startswith("全局"):
+                # 「全局<指标>」= 全表该源字段合计；字段由配置反查，零硬编码
+                base_field = self._resolve_global_base_field(den_field)
+                plan["base_col"] = self._col(base_field)
+                plan["base_total"] = float(AGG_SUM(self.df_raw[base_field]))
+            else:
+                plan["den_field"] = den_field
+                plan["den_let"] = get_column_letter(
+                    metric_keys.index(den_field) + metric_start_col)
+            ratio_plans.append(plan)
 
         for dim_item in t3["dim_list"]:
             sheet_n = dim_item["sheet_name"]
@@ -475,7 +506,7 @@ class GeneralStatSkillEngine:
             ws = wb.create_sheet(title=sheet_n)
 
             header = (["序号", dim_field]
-                      + list(t3["dim_metrics"].keys())
+                      + metric_keys
                       + [x["output_field"] for x in derived])
             ws.append([""])
             ws.append(header)
@@ -491,48 +522,41 @@ class GeneralStatSkillEngine:
                 self._put(ws, row, 1, build_seq_formula(self.first_row - 1), i + 1)
                 self._put(ws, row, 2, d_val, None)
 
+                # 各指标列：sum 记录组内合计（供派生比率作分子/分母），nunique 去重计数
                 sums = {}
-                col_cursor = 3
-                for out_field, setting in t3["dim_metrics"].items():
-                    src_field, agg_type = setting
+                for offset, (out_field, src_field, agg_type, src_col) in enumerate(metric_plans):
+                    col = metric_start_col + offset
                     if agg_type == "sum":
                         val = float(AGG_SUM(g[src_field]))
                         sums[out_field] = val
-                        self._put(ws, row, col_cursor,
-                                  build_sumifs_formula(self._col(src_field), {dim_col: ref},
+                        self._put(ws, row, col,
+                                  build_sumifs_formula(src_col, {dim_col: ref},
                                                        first_row=self.first_row,
                                                        last_row=self.last_row),
                                   val)
                     elif agg_type == "nunique":
-                        self._put(ws, row, col_cursor,
+                        self._put(ws, row, col,
                                   build_sumproud_distinct_contract_formula(
                                       dim_col, ref, pk_col,
                                       first_row=self.first_row, last_row=self.last_row),
                                   int(AGG_NUNIQUE(g[pk_field])))
                     else:
                         raise ValueError("【Task3】不支持的聚合策略：%s" % agg_type)
-                    col_cursor += 1
 
-                # 派生比率：在派生列上逐个写入（列位置由表头动态定位）
-                for ratio_cfg in derived:
-                    out_name = ratio_cfg["output_field"]
-                    num_field = ratio_cfg["numerator_field"]
-                    den_field = ratio_cfg["denominator_field"]
-                    c_idx = header.index(out_name) + 1
-                    num_let = get_column_letter(header.index(num_field) + 1)
-                    num_val = sums.get(num_field)
-                    if den_field == "全局总合同金额":
-                        exp = (num_val / total_amount) if total_amount else None
+                # 派生比率：列位/列字母已在 ratio_plans 预计算，此处只做逐行求值
+                for plan in ratio_plans:
+                    num_val = sums.get(plan["num_field"])
+                    if "base_col" in plan:            # 「全局<指标>」分母 = 全表合计
+                        exp = (num_val / plan["base_total"]) if plan["base_total"] else None
                         formula = build_divide_by_global_formula(
-                            "%s%d" % (num_let, row), amount_col,
+                            "%s%d" % (plan["num_let"], row), plan["base_col"],
                             first_row=self.first_row, last_row=self.last_row)
-                    else:
-                        den_let = get_column_letter(header.index(den_field) + 1)
-                        den_val = sums.get(den_field)
+                    else:                             # 同表内两列相除
+                        den_val = sums.get(plan["den_field"])
                         exp = (num_val / den_val) if den_val else None
-                        formula = build_divide_formula("%s%d" % (num_let, row),
-                                                       "%s%d" % (den_let, row))
-                    self._put(ws, row, c_idx, formula, exp)
+                        formula = build_divide_formula("%s%d" % (plan["num_let"], row),
+                                                       "%s%d" % (plan["den_let"], row))
+                    self._put(ws, row, plan["col"], formula, exp)
 
             apply_sheet_format(
                 ws, self.style_cfg,
@@ -555,6 +579,10 @@ class GeneralStatSkillEngine:
         子集导出时的「公式依赖闭包」：被保留的工作表若在公式里引用了其它工作表，
         那些被引用的表也必须一起导出，否则公式会全部变成 `#REF!`。
 
+        实现：先**单遍**扫描各表公式、建立 {表名: 被引用表集合} 的依赖图，
+        再从请求保留的表出发做 BFS 扩散直至闭包——
+        优于原先「每加一张表就重新全表扫描」的多轮写法。
+
         :param wb: 已构建完 8 张表的 workbook（尚未裁剪）
         :param requested: 调用方请求保留的表名列表
         :return: 按**原表序**排好的工作表名列表（保证「原始数据」仍在前）
@@ -563,20 +591,28 @@ class GeneralStatSkillEngine:
         unknown = [s for s in requested if s not in all_names]
         if unknown:
             raise ValueError("【子集导出】找不到工作表 %s；可选：%s" % (unknown, all_names))
-        keep = list(requested)
-        changed = True
-        while changed:
-            changed = False
-            for name in list(keep):
-                for row in wb[name].iter_rows():
-                    for cell in row:
-                        v = cell.value
-                        if not (isinstance(v, str) and v.startswith("=")):
-                            continue
-                        for other in all_names:
-                            if other not in keep and (other + "!") in v:
-                                keep.append(other)
-                                changed = True
+
+        # 单遍扫描建立依赖图：公式文本中出现「表名!」即视为引用了该表
+        refs = {}
+        for name in all_names:
+            targets = set()
+            for row in wb[name].iter_rows():
+                for cell in row:
+                    v = cell.value
+                    if not (isinstance(v, str) and v.startswith("=")):
+                        continue
+                    targets.update(other for other in all_names
+                                   if other != name and (other + "!") in v)
+            refs[name] = targets
+
+        # BFS 闭包：从请求表出发，把被引用表不断并入 keep，直到不再增长
+        keep = list(dict.fromkeys(requested))
+        queue = list(keep)
+        while queue:
+            for other in refs.get(queue.pop(), ()):
+                if other not in keep:
+                    keep.append(other)
+                    queue.append(other)
         return [n for n in all_names if n in keep]
 
     def _apply_sheet_order(self, wb):
@@ -681,10 +717,15 @@ class GeneralStatSkillEngine:
         stats = inject_cached_values(output_file_path, expected)
         errors = scan_errors(output_file_path)
 
-        # 运行回执：产物侧的客观事实
+        # 运行回执：产物侧的客观事实。
+        # 表序用只读模式重开产物读取，读完即关，避免文件句柄悬挂
+        # （Windows 下句柄不释放会影响后续 verify.py / 网盘同步）。
+        wb_check = load_workbook(output_file_path, read_only=True)
+        sheet_order = [w.title for w in wb_check.worksheets]
+        wb_check.close()
         self.report.update({
             "output": os.path.abspath(output_file_path),
-            "sheet_order": [w.title for w in load_workbook(output_file_path).worksheets],
+            "sheet_order": sheet_order,
             # 回执必须**如实反映配置**（硬性规则 2 要求原始数据不得被美化）：
             # 此前这里是一句硬编码文案，raw_beautify=false 时仍写着"已叠加表头美化/斑马纹…"，属交付物事实错误。
             "raw_sheet": (
