@@ -1,26 +1,26 @@
 @echo off
 REM ============================================================
-REM  ç¦»çº¿å®‰è£…ä¾èµ–ï¼ˆWindows / Python 3.11ï¼‰
-REM  ä»å·¥ç¨‹å†… vendor\ è¯»å– .whlï¼Œå…¨ç¨‹ä¸è”ç½‘ã€‚
-REM  ä¾èµ–é½å…¨æ—¶ä¸åšä»»ä½•å®‰è£…ï¼ˆå¹‚ç­‰ï¼‰ï¼›é€»è¾‘ç»Ÿä¸€ç”± scripts\deps_check.py æä¾›ã€‚
+REM  ÀëÏß°²×°ÒÀÀµ£¨Windows / Python 3.11£©
+REM  ´Ó¹¤³ÌÄÚ vendor\ ¶ÁÈ¡ .whl£¬È«³Ì²»ÁªÍø¡£
+REM  ÒÀÀµÆëÈ«Ê±²»×öÈÎºÎ°²×°£¨ÃİµÈ£©£»Âß¼­Í³Ò»ÓÉ scripts\deps_check.py Ìá¹©¡£
 REM ============================================================
 setlocal
 cd /d "%~dp0"
 
-echo [1/2] æ£€æŸ¥ Python ç‰ˆæœ¬ ...
-python -c "import sys; assert sys.version_info[:2]==(3,11), 'Need Python 3.11, got %s.%s' % sys.version_info[:2]" || (
-  echo [ERROR] éœ€è¦ Python 3.11ï¼Œè¯·å…ˆå®‰è£…å¹¶ç¡®ä¿ python æŒ‡å‘ 3.11
+echo [1/2] ¼ì²é Python °æ±¾ ...
+python -c "import sys; assert sys.version_info[:2]==(3,11), 'Need Python 3.11'" || (
+  echo [ERROR] ĞèÒª Python 3.11£¬ÇëÏÈ°²×°²¢È·±£ python Ö¸Ïò 3.11
   exit /b 1
 )
 
-echo [2/2] ç¦»çº¿ä¾èµ–è‡ªæ£€ / å®‰è£…ï¼ˆåªç”¨ vendor\ï¼Œä¸è”ç½‘ï¼‰...
+echo [2/2] ÀëÏßÒÀÀµ×Ô¼ì / °²×°£¨Ö»ÓÃ vendor\£¬²»ÁªÍø£©...
 python "scripts\deps_check.py" --offline
 if errorlevel 1 (
-  echo [ERROR] ç¦»çº¿å®‰è£…å¤±è´¥
+  echo [ERROR] ÀëÏß°²×°Ê§°Ü
   exit /b 1
 )
 
 echo.
-echo [OK] å®Œæˆã€‚éªŒè¯ï¼š
+echo [OK] Íê³É¡£ÑéÖ¤£º
 echo      python -c "import pandas, numpy, openpyxl; print(pandas.__version__, numpy.__version__, openpyxl.__version__)"
 endlocal

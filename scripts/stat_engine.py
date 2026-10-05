@@ -103,7 +103,7 @@ class GeneralStatSkillEngine:
         self.report.update({
             "input": os.path.abspath(input_excel_path),
             "config": os.path.abspath(self.config_path),
-            "profile": "config-driven",
+            "profile": self.config.get("default_profile", "spec"),
             "source_sheet": self.input_cfg["sheet_name"],
             "hidden_sheets": [w.title for w in wb.worksheets if w.sheet_state != "visible"],
             "header_row": header_row,
