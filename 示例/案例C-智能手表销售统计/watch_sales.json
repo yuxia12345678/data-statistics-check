@@ -1,0 +1,435 @@
+{
+    "input": {
+        "sheet_name": "销售明细",
+        "header_row": 3,
+        "max_data_rows": 10000,
+        "data_end": {
+            "stop_keywords": ["合计", "总计", "小计"],
+            "stop_on_blank_first_col": true
+        }
+    },
+    "style_setting": {
+        "title_bg_color": "FF1F4E78",
+        "title_font_color": "FFFFFFFF",
+        "title_font_size": 14,
+        "header_bg_color": "FF0070C0",
+        "header_font_color": "FFFFFFFF",
+        "odd_row_bg": "FFEBF1F8",
+        "even_row_bg": "FFFFFFFF",
+        "horizontal_border_color": "FFBFBFBF",
+        "amount_number_format": "#,##0.000",
+        "percent_number_format": "0.00%",
+        "int_number_format": "0",
+        "date_number_format": "@",
+        "overview_number_format": "#,##0.000",
+        "col_width_min": 8,
+        "col_width_max": 40,
+        "col_width_padding": 3,
+        "freeze_panes": "A3",
+        "raw_beautify": false,
+        "reason_soft_cf": true,
+        "reason_soft_colors": [
+            "FFFDE9D9",
+            "FFDCE6F1",
+            "FFEBF1DE",
+            "FFE4DFEC",
+            "FFF2DCDB",
+            "FFDAEEF3",
+            "FFFFF2CC",
+            "FFEAF1DD"
+        ]
+    },
+    "output_filename": "智能手表销售统计表_可配置性验证.xlsx",
+    "output": {
+        "input_dir": "示例/案例C-智能手表销售统计",
+        "output_dir": "运行成果",
+        "keep_latest_only": true
+    },
+    "output_sheet_names": {
+        "raw_copy": "原始数据",
+        "task1_result": "同产品型号合并汇总",
+        "task2": "月份利润汇总",
+        "overview": "统计总览"
+    },
+    "sheet_titles": {
+        "raw_copy": "原始数据明细",
+        "task1_result": "同一产品型号数据合并汇总",
+        "task2": "月份利润汇总",
+        "overview": "数据统计总览",
+        "dim_suffix": "维度统计分析"
+    },
+    "raw_copy_format": {
+        "num_fields": [
+            "单价(元)",
+            "销售金额(元)",
+            "成本(元)",
+            "利润(元)"
+        ],
+        "int_fields": [
+            "销售数量(只)"
+        ],
+        "date_fields": [],
+        "cat_fields": [
+            "月份",
+            "产品型号"
+        ],
+        "text_fields": []
+    },
+    "task1_group_merge": {
+        "primary_key": "产品型号",
+        "new_serial_name": "序号",
+        "agg_strategy_list": [
+            {
+                "field_name": "产品型号",
+                "agg_strategy": "value"
+            },
+            {
+                "field_name": "月份",
+                "agg_strategy": "distinct_join",
+                "join_separator": "、"
+            },
+            {
+                "field_name": "销售数量(只)",
+                "agg_strategy": "sum"
+            },
+            {
+                "field_name": "销售金额(元)",
+                "agg_strategy": "sum"
+            },
+            {
+                "field_name": "成本(元)",
+                "agg_strategy": "sum"
+            },
+            {
+                "field_name": "利润(元)",
+                "agg_strategy": "sum"
+            }
+        ],
+        "num_fields": [
+            "销售金额(元)",
+            "成本(元)",
+            "利润(元)"
+        ],
+        "int_fields": [
+            "序号",
+            "销售数量(只)"
+        ],
+        "pct_fields": [],
+        "date_fields": [],
+        "cat_fields": [
+            "产品型号",
+            "月份"
+        ],
+        "text_fields": []
+    },
+    "task2_special_agg": {
+        "sheet_name": "月份利润汇总",
+        "group_field": "月份",
+        "amount_field": "利润(元)",
+        "contract_key": "产品型号",
+        "sort_by_field": "利润(元)",
+        "target_sum_field": "利润(元)",
+        "ratio_field_name": "占比",
+        "ratio_denominator": {
+            "minuend_field": "销售金额(元)",
+            "subtrahend_field": "成本(元)"
+        },
+        "metrics": {
+            "利润(元)": [
+                "利润(元)",
+                "sum"
+            ],
+            "涉及数据笔数": [
+                "月份",
+                "count"
+            ]
+        },
+        "num_fields": [
+            "利润(元)"
+        ],
+        "int_fields": [
+            "序号",
+            "涉及数据笔数"
+        ],
+        "pct_fields": [
+            "占比"
+        ],
+        "cat_fields": [
+            "月份"
+        ],
+        "text_fields": []
+    },
+    "task3_multi_dim": {
+        "overview_sheet_name": "统计总览",
+        "dim_list": [
+            {
+                "dimension_field": "月份",
+                "sheet_name": "月份统计"
+            },
+            {
+                "dimension_field": "产品型号",
+                "sheet_name": "产品型号统计"
+            }
+        ],
+        "dim_metrics": {
+            "总销售数量": [
+                "销售数量(只)",
+                "sum"
+            ],
+            "总销售金额": [
+                "销售金额(元)",
+                "sum"
+            ],
+            "总成本": [
+                "成本(元)",
+                "sum"
+            ],
+            "总利润": [
+                "利润(元)",
+                "sum"
+            ],
+            "机型数": [
+                "产品型号",
+                "nunique"
+            ]
+        },
+        "derived_ratio_list": [
+            {
+                "output_field": "利润率",
+                "numerator_field": "总利润",
+                "denominator_field": "总销售金额"
+            },
+            {
+                "output_field": "销售额占比",
+                "numerator_field": "总销售金额",
+                "denominator_field": "全局总销售金额"
+            }
+        ],
+        "sort_by_field": "销售金额(元)",
+        "num_fields": [
+            "总销售金额",
+            "总成本",
+            "总利润"
+        ],
+        "int_fields": [
+            "序号",
+            "总销售数量",
+            "机型数"
+        ],
+        "pct_fields": [
+            "利润率",
+            "销售额占比"
+        ],
+        "cat_fields": [],
+        "text_fields": [],
+        "overview_metrics": [
+            {
+                "output_field": "总销售数量（只）",
+                "agg_operator": "sum",
+                "source_field": "销售数量(只)",
+                "divide": 1
+            },
+            {
+                "output_field": "总销售金额（元）",
+                "agg_operator": "sum",
+                "source_field": "销售金额(元)",
+                "divide": 1
+            },
+            {
+                "output_field": "总成本（元）",
+                "agg_operator": "sum",
+                "source_field": "成本(元)",
+                "divide": 1
+            },
+            {
+                "output_field": "总利润（元）",
+                "agg_operator": "sum",
+                "source_field": "利润(元)",
+                "divide": 1
+            },
+            {
+                "output_field": "整体利润率",
+                "agg_operator": "ratio",
+                "numerator": "总利润（元）",
+                "denominator": "总销售金额（元）",
+                "source_field": ""
+            },
+            {
+                "output_field": "总机型数",
+                "agg_operator": "nunique",
+                "source_field": "产品型号"
+            },
+            {
+                "output_field": "总数据笔数",
+                "agg_operator": "count_rows",
+                "source_field": ""
+            }
+        ],
+        "overview_num_fields": [
+            "总销售数量（只）",
+            "总销售金额（元）",
+            "总成本（元）",
+            "总利润（元）",
+            "总机型数",
+            "总数据笔数"
+        ],
+        "overview_pct_fields": [
+            "整体利润率"
+        ]
+    },
+    "extra_sheets": [
+        {
+            "type": "group",
+            "sheet_name": "机型销售统计",
+            "sheet_title": "机型销售统计",
+            "group_field": "产品型号",
+            "serial": "序号",
+            "total_row": true,
+            "total_label": "合计",
+            "sort_by": "销售金额(元)",
+            "sort_desc": true,
+            "columns": [
+                {
+                    "name": "产品型号",
+                    "kind": "cat",
+                    "agg": "group"
+                },
+                {
+                    "name": "销售数量(只)",
+                    "kind": "int",
+                    "agg": "sum",
+                    "field": "销售数量(只)"
+                },
+                {
+                    "name": "销售金额(元)",
+                    "kind": "money",
+                    "agg": "sum",
+                    "field": "销售金额(元)"
+                },
+                {
+                    "name": "成本(元)",
+                    "kind": "money",
+                    "agg": "sum",
+                    "field": "成本(元)"
+                },
+                {
+                    "name": "利润(元)",
+                    "kind": "money",
+                    "agg": "sum",
+                    "field": "利润(元)"
+                },
+                {
+                    "name": "利润率",
+                    "kind": "pct",
+                    "agg": "ratio",
+                    "numerator": "利润(元)",
+                    "denominator": "销售金额(元)"
+                },
+                {
+                    "name": "销售额占比",
+                    "kind": "pct",
+                    "agg": "ratio",
+                    "numerator": "销售金额(元)",
+                    "denominator": "global:销售金额(元)"
+                },
+                {
+                    "name": "平均单价(元)",
+                    "kind": "money",
+                    "agg": "ratio",
+                    "numerator": "销售金额(元)",
+                    "denominator": "销售数量(只)"
+                }
+            ]
+        },
+        {
+            "type": "pivot",
+            "sheet_name": "月份×机型交叉表",
+            "sheet_title": "月份 × 机型 销售金额交叉表（元）",
+            "row_field": "月份",
+            "col_field": "产品型号",
+            "value_field": "销售金额(元)",
+            "agg": "sum",
+            "col_sort": "desc",
+            "total_row": true,
+            "total_col": true,
+            "total_label": "合计"
+        }
+    ],
+    "field_kind": {
+        "序号": "int",
+        "指标": "text",
+        "数值": "num",
+        "月份": "cat",
+        "产品型号": "cat",
+        "销售数量(只)": "int",
+        "单价(元)": "money",
+        "销售金额(元)": "money",
+        "成本(元)": "money",
+        "利润(元)": "money",
+        "涉及数据笔数": "int",
+        "占比": "pct",
+        "总销售数量": "int",
+        "总销售金额": "money",
+        "总成本": "money",
+        "总利润": "money",
+        "机型数": "int",
+        "利润率": "pct",
+        "销售额占比": "pct",
+        "平均单价(元)": "money",
+        "总销售数量（只）": "int",
+        "总销售金额（元）": "money",
+        "总成本（元）": "money",
+        "总利润（元）": "money",
+        "总机型数": "int",
+        "总数据笔数": "int",
+        "整体利润率": "pct"
+    },
+    "default_profile": "spec",
+    "profiles": {
+        "spec": {
+            "name": "spec",
+            "money_format": "#,##0.000",
+            "border_mode": "horizontal",
+            "align_by_kind": {
+                "text": "left",
+                "num": "right",
+                "money": "right",
+                "int": "right",
+                "pct": "right",
+                "date": "center",
+                "cat": "center"
+            },
+            "merge_col_order": [
+                "序号",
+                "产品型号",
+                "月份",
+                "销售数量(只)",
+                "销售金额(元)",
+                "成本(元)",
+                "利润(元)"
+            ],
+            "dim_headers": [
+                "序号",
+                "{dim}",
+                "总销售数量",
+                "总销售金额",
+                "总成本",
+                "总利润",
+                "机型数",
+                "利润率",
+                "销售额占比"
+            ],
+            "sheet_order": [
+                "原始数据",
+                "同产品型号合并汇总",
+                "月份利润汇总",
+                "统计总览",
+                "月份统计",
+                "产品型号统计",
+                "机型销售统计",
+                "月份×机型交叉表"
+            ],
+            "raw_override_title_row": false
+        }
+    }
+}

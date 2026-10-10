@@ -27,13 +27,15 @@ import time
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 from agg_strategy import (
-    AGG_STRATEGY_REGISTRY, distinct_join, first_non_null, is_blank, text_of,
+    AGG_STRATEGY_REGISTRY, distinct_join, first_non_null, is_blank,
+    last_non_null, text_of,
 )
 from cached_values import inject_cached_values, scan_errors
-from config_validator import validate_business_config
+from config_validator import kind_of_name, style_kind_of, validate_business_config
 from excel_styler import apply_sheet_format
 from formula_builder import (
     build_sumifs_formula, build_countifs_formula,
@@ -70,7 +72,11 @@ class GeneralStatSkillEngine:
         self.df_raw = None
         self.input_excel_path = ""
         self.field_to_col = {}
-        self.first_row = self.input_cfg["header_row"] + 1     # 数据首行（=3）
+        self.first_row = self.input_cfg["header_row"] + 1     # 源表数据首行（公式区间用）
+        # 产物工作表的数据首行**固定为 3**（第 1 行合并大标题 + 第 2 行表头），
+        # 与源表表头行位置**解耦**：源表表头在第 3 行（其他行业报表常见）时，
+        # 公式区间起点仍是源表数据首行，但产物数据行必须从第 3 行开始。
+        self.out_first_row = 3
         self.last_row = None                                  # 数据末行，读取源表后确定
         self.expected = {}                                    # {sheet: {coord: 值}}
         self.report = {}                                      # 运行回执（由 run_skill.py 落盘）
@@ -90,15 +96,10 @@ class GeneralStatSkillEngine:
         ws = wb[self.input_cfg["sheet_name"]]
         self.field_to_col = self.build_header_col_mapping(ws, header_row)
 
-        # 动态探测数据末行（最后一行有任意非空单元格）。
-        # 用 iter_rows 单遍扫描代替逐格 ws.cell(r, c)：后者每次调用都要做一次
-        # 坐标解析，在千行级源表上是读入阶段的主要开销；源文件自带的
-        # 「幽灵列」（有样式无值）不影响判定（value 均为 None）。
-        last = header_row
-        for row in ws.iter_rows(min_row=header_row + 1):
-            if any(cell.value not in (None, "") for cell in row):
-                last = row[0].row
-        self.last_row = last
+        # 动态探测数据末行。口径见 _resolve_last_row：默认仍是「最后一个非空行」，
+        # 换「其他行业」源表（含「合计」行 / 页脚行）时可在配置 `input.data_end`
+        # 里声明停止词或停止条件，**无需改代码**。
+        self.last_row = self._resolve_last_row(ws, header_row)
         # 运行回执：源表侧的客观事实
         self.report.update({
             "input": os.path.abspath(input_excel_path),
@@ -113,9 +114,14 @@ class GeneralStatSkillEngine:
         })
         wb.close()
 
+        # 只读取**数据区**（表头行 + 到 last_row 为止）。其他行业报表常在表尾带
+        # 「合计」行与页脚行（如「内容由 AI 生成」），若不限定行数：
+        #   1) 它们会被当成明细参与统计 —— 结果直接算错；
+        #   2) 数值列会因混入 `=SUM(...)` 文本变成 object 类型，求和抛异常。
         df = pd.read_excel(input_excel_path,
                            sheet_name=self.input_cfg["sheet_name"],
-                           skiprows=header_row - 1)
+                           skiprows=header_row - 1,
+                           nrows=max(0, self.last_row - header_row))
         df.columns = [str(c).strip() for c in df.columns]
         keep = [c for c in df.columns if c in self.field_to_col]
         self.df_raw = df[keep].copy()
@@ -128,6 +134,40 @@ class GeneralStatSkillEngine:
                                .str.strip()
                                .str.replace("\n", "", regex=False)
                                .str.replace("\r", "", regex=False))
+
+    def _resolve_last_row(self, ws, header_row: int) -> int:
+        """探测数据末行（口径由配置声明，换源表零改动）。
+
+        优先级：
+          1. `input.data_end.last_row`          —— 显式指定数据末行（最直接）；
+          2. `input.data_end.stop_keywords`     —— 首列（去空格后）以这些词开头即停止
+             （排除「合  计」「总计」「小计」这类汇总行）；
+          3. `input.data_end.stop_on_blank_first_col = true`
+             —— 首列为空即停止（排除表尾页脚行，如「内容由 AI 生成」）。
+        以上都没配 → 保持原口径：最后一个含任意非空单元格的行。
+
+        单遍 iter_rows 扫描（与旧实现同量级开销），不逐格 ws.cell 解析坐标。
+        """
+        cfg = self.input_cfg.get("data_end") or {}
+        if cfg.get("last_row"):
+            return int(cfg["last_row"])
+        keywords = [str(k).replace(" ", "") for k in (cfg.get("stop_keywords") or [])]
+        stop_blank = bool(cfg.get("stop_on_blank_first_col", False))
+        last = header_row
+        for row in ws.iter_rows(min_row=header_row + 1):
+            if not keywords and not stop_blank:
+                # 默认口径：最后一个含任意非空单元格的行
+                if any(cell.value not in (None, "") for cell in row):
+                    last = row[0].row
+                continue
+            raw = row[0].value
+            text = "" if raw is None else str(raw).replace(" ", "").strip()
+            if stop_blank and text == "":
+                break
+            if keywords and any(text.startswith(k) for k in keywords):
+                break
+            last = row[0].row
+        return last
 
     @staticmethod
     def build_header_col_mapping(raw_ws, header_row: int) -> dict:
@@ -214,10 +254,10 @@ class GeneralStatSkillEngine:
         ]
 
         for i, code in enumerate(contract_list):
-            row = self.first_row + i
+            row = self.out_first_row + i
             g = grouped.get_group(code)
             ref = '"%s"' % code
-            self._put(ws, row, 1, build_seq_formula(self.first_row - 1), i + 1)
+            self._put(ws, row, 1, build_seq_formula(self.out_first_row - 1), i + 1)
             for j, (field, strat, col, join_sep) in enumerate(rule_plans, start=2):
                 if strat == "sum":
                     self._put(ws, row, j,
@@ -306,16 +346,21 @@ class GeneralStatSkillEngine:
         metric_plans = [(src_field, agg_type, self._col(src_field))
                         for src_field, agg_type in metrics.values()]
 
-        # 「占比」列号（表尾第 1 列）与分子列号（第 3 列 = metrics 首项的金额求和列）
-        # 均与行无关，循环外确定一次
+        # 「占比」列号（表尾第 1 列）与分子列号**均与行无关，循环外确定一次**。
+        # 分子列 = metrics 中「来源字段 == amount_field」的那一列（配置反查，不写死列号）：
+        # 增 / 删 / 重排 metrics、改业务字段名后，分子列自动跟随，代码零改动。
         ratio_col = len(header_list)
         numerator_col_letter = get_column_letter(3)
+        for _j, (_src, _agg, _c) in enumerate(metric_plans, start=3):
+            if _src == amount_field:
+                numerator_col_letter = get_column_letter(_j)
+                break
 
         for i, g_val in enumerate(group_val_list):
-            row = self.first_row + i
+            row = self.out_first_row + i
             g = grouped.get_group(g_val)
             ref = '"%s"' % g_val
-            self._put(ws, row, 1, build_seq_formula(self.first_row - 1), i + 1)
+            self._put(ws, row, 1, build_seq_formula(self.out_first_row - 1), i + 1)
             self._put(ws, row, 2, g_val, None)
             for j, (src_field, agg_type, src_col) in enumerate(metric_plans, start=3):
                 if agg_type == "sum":
@@ -369,6 +414,30 @@ class GeneralStatSkillEngine:
 
     # ============================================================ 统计总览（最后一张）
 
+    def _overview_format(self, out_name: str, agg_operator: str) -> str:
+        """统计总览某行的数字格式：先按 `field_kind` 反查该指标，再按聚合类型兜底。
+
+        与 `verify.py` 的 R8 使用**同一个** `kind_of_name` 解析器（配置是唯一事实源），
+        避免生成侧与自检侧对同一行给出不同期望。
+        """
+        kind = kind_of_name(self.config.get("field_kind") or {}, out_name)
+        fmt_by_kind = {
+            "money": self.style_cfg["amount_number_format"],
+            "num": self.style_cfg["amount_number_format"],
+            "int": self.style_cfg.get("int_number_format", "0"),
+            "pct": self.style_cfg["percent_number_format"],
+            "date": self.style_cfg.get("date_number_format", "@"),
+        }
+        if kind in fmt_by_kind:
+            return fmt_by_kind[kind]
+        return {
+            "sum": self.style_cfg["amount_number_format"],
+            "avg": self.style_cfg["amount_number_format"],
+            "ratio": self.style_cfg["percent_number_format"],
+            "nunique": self.style_cfg.get("int_number_format", "0"),
+            "count_rows": self.style_cfg.get("int_number_format", "0"),
+        }.get(agg_operator, self.style_cfg["amount_number_format"])
+
     def run_overview_formula_build(self, wb, field_to_col: dict):
         """统计总览：8 项全局指标，全部动态公式；数字格式按操作类型决定。"""
         ws = wb.create_sheet(title=self.t3_cfg["overview_sheet_name"])
@@ -379,7 +448,13 @@ class GeneralStatSkillEngine:
         pk_col = self._col(pk)
         reason_field = self.t2_cfg["group_field"]
         reason_col = self._col(reason_field)
-        serial_col = self._col(self.t1_cfg["new_serial_name"])
+        # 「总数据笔数」的计数列：`task3_multi_dim.count_rows_field` 优先 → 业务主键列
+        # → 源表第 1 个业务列。**不能写死取「序号」列**：其他行业源表常常没有序号列
+        # （序号是合并表的输出列，不是源字段），否则会直接报「找不到字段」。
+        count_field = (self.t3_cfg.get("count_rows_field")
+                       or (pk if pk in self.field_to_col else "")
+                       or next(iter(self.field_to_col), ""))
+        serial_col = self._col(count_field)
 
         # 「整体回款率」分子/分母的**源字段**由配置反查得到，零硬编码：
         # overview_metrics 中 agg_operator=="ratio" 的 numerator/denominator 是「输出字段名」，
@@ -407,7 +482,7 @@ class GeneralStatSkillEngine:
         cell_row_of = {}
         row_formats = []
         for i, item in enumerate(self.t3_cfg["overview_metrics"]):
-            row = self.first_row + i
+            row = self.out_first_row + i
             out_name = item["output_field"]
             op = item["agg_operator"]
             src_field = item.get("source_field", "")
@@ -424,14 +499,23 @@ class GeneralStatSkillEngine:
                 expected = (total_received / total_amount) if total_amount else None
                 fmt = self.style_cfg["percent_number_format"]
             elif op == "nunique":
+                # 去重计数的**列按配置的 source_field 反查**（原先非主键一律落到
+                # 任务2 分类列，等于写死了一种业务字段，增删字段时会算错）。
                 if src_field == pk:
                     formula = build_distinct_all_formula(pk_col, first_row=self.first_row,
                                                          last_row=self.last_row)
                     expected = distinct_contracts
-                else:
+                elif src_field == reason_field:
                     formula = build_distinct_nonblank_all_formula(
                         reason_col, first_row=self.first_row, last_row=self.last_row)
                     expected = reason_count
+                else:
+                    _col_letter = self._col(src_field)
+                    _nb = self.df_raw.loc[
+                        ~self.df_raw[src_field].apply(is_blank), src_field]
+                    formula = build_distinct_nonblank_all_formula(
+                        _col_letter, first_row=self.first_row, last_row=self.last_row)
+                    expected = int(AGG_NUNIQUE(_nb)) if len(_nb) else 0
                 fmt = self.style_cfg.get("int_number_format", "0")
             elif op == "count_rows":
                 formula = build_counta_formula(serial_col, first_row=self.first_row,
@@ -440,6 +524,11 @@ class GeneralStatSkillEngine:
                 fmt = self.style_cfg.get("int_number_format", "0")
             else:
                 raise ValueError("【总览】不支持的聚合操作：%s" % op)
+
+            # 数字格式：**优先按 field_kind 反查该指标**（与其它表同一套规则），
+            # 查不到再按聚合类型兜底。这样给总览新增非金额指标（如「总销售数量（只）」
+            # 登记为 int）只需改配置，不必改代码，且与自检 R8 的判据完全一致。
+            fmt = self._overview_format(out_name, op)
 
             self._put(ws, row, 1, out_name, None)
             self._put(ws, row, 2, formula, expected)
@@ -516,10 +605,10 @@ class GeneralStatSkillEngine:
             self.report.setdefault("dim_category_counts", {})[dim_field] = len(dim_val_list)
 
             for i, d_val in enumerate(dim_val_list):
-                row = self.first_row + i
+                row = self.out_first_row + i
                 g = grouped.get_group(d_val)
                 ref = '"%s"' % d_val
-                self._put(ws, row, 1, build_seq_formula(self.first_row - 1), i + 1)
+                self._put(ws, row, 1, build_seq_formula(self.out_first_row - 1), i + 1)
                 self._put(ws, row, 2, d_val, None)
 
                 # 各指标列：sum 记录组内合计（供派生比率作分子/分母），nunique 去重计数
@@ -571,6 +660,405 @@ class GeneralStatSkillEngine:
                 total_title_cols=len(header),
                 display_values=self.expected.get(ws.title),
             )
+
+    # ============================================================ 通用声明式工作表
+    #
+    # 目的（对应《竞赛须知》「规则可配置」）：**换行业数据 / 新增工作表 /
+    # 表内加·删·改字段，只改配置 JSON，本文件零改动。**
+    # 配置形态与完整语义见 references/配置驱动规范.md（§2 声明式 columns、§3 extra_sheets）。
+    #
+    # 支持的列聚合 `agg`：
+    #   group          分组值本身（分类/文本列，写字面量）
+    #   seq            序号 =ROW()-n
+    #   const          固定文本（literal）
+    #   sum            SUMIFS(原始数据!<field>, 原始数据!<分组列>, <本行分组值单元格>)
+    #   count          COUNTIFS(原始数据!<分组列>, <本行分组值单元格>) = 组内明细行数
+    #   nunique        SUMPRODUCT((分组列=值)/COUNTIFS(域,域&"",分组列,分组列&""))
+    #   first_non_null INDEX+MATCH 取组内第一条非空
+    #   last_non_null  同 first_non_null（取末条；公式同 first 构造器的区间语义）
+    #   distinct_join  组内非空去重拼接（Excel 无非数组稳定写法 → 公式化例外，写文本）
+    #   ratio          分子/分母 = 本表输出列名 | "global:<源字段>" | "literal:<数>"；
+    #                  分母亦可为 {"minuend_field":..,"subtrahend_field":..}（两列合计之差）
+    # 合计行（total_row=true）：group 列写 total_label；sum/count/nunique 写全表聚合公式；
+    #   ratio 引用合计行自身的单元格；seq/const/文本类留空。
+
+    def _col_letter(self, column_index: int) -> str:
+        return get_column_letter(column_index)
+
+    def _group_keys(self, group_field: str) -> list:
+        """分组取值清单：[(分组键文本, 原始值)]，按首次出现顺序，空白不计入。"""
+        seen, out = set(), []
+        for v in self.df_raw[group_field].tolist():
+            k = text_of(v)
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            out.append((k, v))
+        return out
+
+    def _subset(self, group_field, group_key):
+        """该分组的明细行；group_key 为 None → 全表（合计行 / 全表汇总行用）。"""
+        if group_field is None or group_key is None:
+            return self.df_raw
+        return self.df_raw[self.df_raw[group_field].map(
+            lambda v: text_of(v) == group_key)]
+
+    def _eval_column(self, col: dict, g):
+        """非 ratio 列的期望值（pandas 独立算，仅供缓存值注入 / 自检复核）。"""
+        agg = col["agg"]
+        if agg == "sum":
+            return float(AGG_SUM(g[col["field"]]))
+        if agg == "nunique":
+            nb = g.loc[~g[col["field"]].apply(is_blank), col["field"]]
+            return int(AGG_NUNIQUE(nb)) if len(nb) else 0
+        if agg == "count":
+            return int(len(g))
+        if agg == "first_non_null":
+            v = first_non_null(g[col["field"]])
+            return v if not is_blank(v) else ""
+        if agg == "last_non_null":
+            v = last_non_null(g[col["field"]])
+            return v if not is_blank(v) else ""
+        if agg == "distinct_join":
+            return distinct_join(g[col["field"]], col.get("join_separator", "；"))
+        if agg == "const":
+            return col.get("literal", "")
+        return None                                  # group / seq / ratio 由调用方处理
+
+    def _formula_column(self, col: dict, row: int, ctx: dict):
+        """某列在第 row 行的 Excel 公式；返回 None = 该格写字面量（分组值 / 文本拼接）。"""
+        agg = col["agg"]
+        if agg in ("group", "const", "distinct_join"):
+            return None
+        if agg == "seq":
+            return build_seq_formula(self.out_first_row - 1)
+        raw, r0, r1 = ctx["raw_sheet"], self.first_row, self.last_row
+        cond = {}
+        if ctx["group_col"] and ctx["cond_cell"]:
+            cond = {ctx["group_col"]: ctx["cond_cell"] % row}
+        if agg in ("sum", "count", "nunique", "first_non_null", "last_non_null"):
+            fcol = self._col(col["field"])
+            if not cond:                             # 合计行 / 全表汇总行 → 全表聚合公式
+                if agg == "sum":
+                    return build_sum_all_formula(fcol, source_sheet=raw,
+                                                 first_row=r0, last_row=r1)
+                if agg == "count":
+                    return build_counta_formula(ctx["group_col"], source_sheet=raw,
+                                                first_row=r0, last_row=r1)
+                if agg == "nunique":
+                    return build_distinct_nonblank_all_formula(fcol, source_sheet=raw,
+                                                               first_row=r0, last_row=r1)
+                return None                          # 文本类没有「全表」公式，留空
+            if agg == "sum":
+                return build_sumifs_formula(fcol, cond, source_sheet=raw,
+                                            first_row=r0, last_row=r1)
+            if agg == "count":
+                return build_countifs_formula(cond, source_sheet=raw,
+                                              first_row=r0, last_row=r1)
+            if agg == "nunique":
+                return build_sumproud_distinct_contract_formula(
+                    ctx["group_col"], cond[ctx["group_col"]], fcol,
+                    source_sheet=raw, first_row=r0, last_row=r1)
+            return build_index_first_non_null(ctx["group_col"], cond[ctx["group_col"]],
+                                              fcol, source_sheet=raw,
+                                              first_row=r0, last_row=r1)
+        if agg == "ratio":
+            num = self._operand(col["numerator"], row, ctx)
+            den_cfg = col["denominator"]
+            if isinstance(den_cfg, dict):
+                return build_divide_by_columns_diff_formula(
+                    num, self._col(den_cfg["minuend_field"]),
+                    self._col(den_cfg["subtrahend_field"]),
+                    source_sheet=raw, first_row=r0, last_row=r1)
+            return build_divide_formula(num, self._operand(den_cfg, row, ctx))
+        raise ValueError("【extra_sheets】不支持的聚合：%s" % agg)
+
+    def _operand(self, ref, row: int, ctx: dict) -> str:
+        """ratio 的分子 / 分母：本表输出列名 → 单元格；global:<源字段> → 全表合计。"""
+        if isinstance(ref, (int, float)) and not isinstance(ref, bool):
+            return repr(float(ref))
+        s = str(ref)
+        if s.startswith("global:"):
+            return build_sum_all_formula(self._col(s.split(":", 1)[1]),
+                                         source_sheet=ctx["raw_sheet"],
+                                         first_row=self.first_row,
+                                         last_row=self.last_row)[1:]
+        if s.startswith("literal:"):
+            return s.split(":", 1)[1]
+        cell = ctx["cells"].get(s)
+        if not cell:
+            raise ValueError("ratio 引用的列「%s」未在本表 columns 中声明" % s)
+        return cell % row
+
+    def _ratio_value(self, col: dict, get_value):
+        """ratio 列的期望值（pandas 独立算）。"""
+        def operand(ref):
+            if isinstance(ref, (int, float)) and not isinstance(ref, bool):
+                return float(ref)
+            s = str(ref)
+            if s.startswith("global:"):
+                return float(AGG_SUM(self.df_raw[s.split(":", 1)[1]]))
+            if s.startswith("literal:"):
+                return float(s.split(":", 1)[1])
+            return get_value(s)
+
+        den_cfg = col["denominator"]
+        if isinstance(den_cfg, dict):
+            den = (float(AGG_SUM(self.df_raw[den_cfg["minuend_field"]]))
+                   - float(AGG_SUM(self.df_raw[den_cfg["subtrahend_field"]])))
+        else:
+            den = operand(den_cfg)
+        num = operand(col["numerator"])
+        try:
+            num, den = float(num), float(den)
+        except (TypeError, ValueError):
+            return None
+        return (num / den) if den else None
+
+    @staticmethod
+    def _kinds_of(cols: list) -> dict:
+        """按列声明的 kind 汇总成 apply_sheet_format 需要的字段类型清单
+        （money → num：金额在样式清单里叫 num，在 field_kind 里叫 money）。"""
+        out = {"num": [], "int": [], "pct": [], "date": [], "cat": [], "text": []}
+        for c in cols:
+            out.setdefault(style_kind_of(c["kind"]), []).append(c["name"])
+        return out
+
+    def run_extra_sheets_build(self, wb, field_to_col):
+        """构建配置 `extra_sheets` 声明的全部新增工作表（type=group / pivot）。"""
+        for spec in (self.config.get("extra_sheets") or []):
+            if spec.get("type", "group") == "pivot":
+                self._build_pivot_sheet(wb, spec)
+            else:
+                self._build_group_sheet(wb, spec)
+            self.report.setdefault("extra_sheets", []).append(spec["sheet_name"])
+
+    # ---------------------------------------------------------- group 型（逐组一行）
+    def _build_group_sheet(self, wb, spec):
+        ws = wb.create_sheet(title=spec["sheet_name"])
+        cols = list(spec["columns"])
+        serial = spec.get("serial")
+        header = ([serial] if serial else []) + [c["name"] for c in cols]
+        ws.append([""])
+        ws.append(header)
+
+        ctx = {"raw_sheet": self.output_sheet_cfg["raw_copy"],
+               "group_field": spec.get("group_field"),
+               "group_col": (self._col(spec["group_field"])
+                             if spec.get("group_field") else None),
+               "cond_cell": None,
+               "cells": {}}
+        group_out_idx = None
+        for i, c in enumerate(cols, start=(2 if serial else 1)):
+            ctx["cells"][c["name"]] = self._col_letter(i) + "%d"
+            if group_out_idx is None and c["agg"] == "group":
+                group_out_idx = i
+        if group_out_idx:
+            ctx["cond_cell"] = "$%s%%d" % self._col_letter(group_out_idx)
+
+        keys = (self._group_keys(spec["group_field"]) if spec.get("group_field")
+                else [(None, "")])
+        rows_data = []
+        for key, raw_val in keys:
+            g = self._subset(spec.get("group_field"), key)
+            vals = {}
+            for c in cols:
+                if c["agg"] == "group":
+                    vals[c["name"]] = raw_val
+                elif c["agg"] not in ("ratio", "seq"):
+                    vals[c["name"]] = self._eval_column(c, g)
+            rows_data.append({"key": key, "raw_val": raw_val, "g": g, "vals": vals})
+        # ratio 第二遍：可引用同表任意非 ratio 列（列序不受限）
+        for rd in rows_data:
+            for c in cols:
+                if c["agg"] == "ratio":
+                    rd["vals"][c["name"]] = self._ratio_value(
+                        c, lambda n, rd=rd: rd["vals"].get(n))
+
+        sort_by = spec.get("sort_by")
+        if sort_by:
+            def _sort_key(rd):
+                try:
+                    return float(rd["vals"].get(sort_by))
+                except (TypeError, ValueError):
+                    return float("-inf")
+            rows_data.sort(key=_sort_key, reverse=bool(spec.get("sort_desc", True)))
+
+        for i, rd in enumerate(rows_data):
+            row = self.out_first_row + i
+            c_idx = 1
+            if serial:
+                self._put(ws, row, c_idx, build_seq_formula(self.out_first_row - 1), i + 1)
+                c_idx += 1
+            for c in cols:
+                exp = (i + 1) if c["agg"] == "seq" else rd["vals"].get(c["name"])
+                formula = self._formula_column(c, row, ctx)
+                if formula is None:
+                    val = rd["raw_val"] if c["agg"] == "group" else exp
+                    self._put(ws, row, c_idx, val, val)
+                else:
+                    self._put(ws, row, c_idx, formula,
+                              exp if exp is not None else "")
+                c_idx += 1
+
+        if spec.get("total_row"):
+            self._append_total_row(ws, spec, cols, serial, ctx, header)
+
+        self._format_declared_sheet(ws, spec, cols, serial, self._kinds_of(cols))
+        return ws
+
+    def _append_total_row(self, ws, spec, cols, serial, ctx, header):
+        """合计行：数值列写全表聚合公式，文本列留空，分组列写 total_label。"""
+        n_rows = ws.max_row - 2                       # 已有数据行数（不含标题/表头）
+        trow = self.out_first_row + n_rows
+        label = spec.get("total_label", "合计")
+        total_vals = {}
+        for c in cols:
+            agg = c["agg"]
+            if agg == "sum":
+                total_vals[c["name"]] = float(AGG_SUM(self.df_raw[c["field"]]))
+            elif agg == "nunique":
+                total_vals[c["name"]] = int(AGG_NUNIQUE(self.df_raw[c["field"]]))
+            elif agg == "count":
+                total_vals[c["name"]] = (
+                    int(AGG_SUM(self.df_raw[ctx["group_field"]].notna()))
+                    if ctx["group_field"] else int(len(self.df_raw)))
+        for c in cols:
+            if c["agg"] == "ratio":
+                total_vals[c["name"]] = self._ratio_value(c, lambda n: total_vals.get(n))
+
+        ctx_total = dict(ctx)
+        ctx_total["cond_cell"] = None                 # 无分组条件 → 全表聚合公式
+        c_idx = 2 if serial else 1
+        for c in cols:
+            agg = c["agg"]
+            if agg == "group":
+                val, formula = label, label
+            elif agg in ("sum", "count", "nunique", "ratio"):
+                val = total_vals.get(c["name"])
+                formula = self._formula_column(c, trow, ctx_total)
+            else:
+                val, formula = "", None
+            if formula:
+                self._put(ws, trow, c_idx, formula, val if val is not None else "")
+            elif val != "":
+                self._put(ws, trow, c_idx, val, val)
+            c_idx += 1
+        for cc in range(1, len(header) + 1):
+            ws.cell(trow, cc).font = Font(bold=True)
+
+    def _format_declared_sheet(self, ws, spec, cols, serial, kinds):
+        """统一美化声明式工作表（样式参数仍全部来自 style_setting）。"""
+        int_cols = list(kinds.get("int", []))
+        if serial:
+            int_cols.append(serial)
+        apply_sheet_format(
+            ws, self.style_cfg,
+            num_cols=list(kinds.get("num", [])),
+            pct_cols=list(kinds.get("pct", [])),
+            date_cols=list(kinds.get("date", [])),
+            cat_cols=list(kinds.get("cat", [])),
+            int_cols=int_cols,
+            text_cols=list(kinds.get("text", [])),
+            header_row_idx=2,
+            sheet_title=spec.get("sheet_title") or spec["sheet_name"],
+            total_title_cols=ws.max_column,
+            display_values=self.expected.get(ws.title),
+        )
+
+    # ---------------------------------------------------------- pivot 型（行列交叉）
+    def _pivot_value(self, row_field, col_field, val_field, agg, row_key, col_key):
+        """交叉表单元格期望值（pandas 独立算）。"""
+        df = self.df_raw
+        if row_key is not None:
+            df = df[df[row_field].map(lambda v: text_of(v) == row_key)]
+        if col_key is not None:
+            df = df[df[col_field].map(lambda v: text_of(v) == col_key)]
+        if agg == "count":
+            return int(len(df))
+        return float(AGG_SUM(df[val_field]))
+
+    @staticmethod
+    def _pivot_formula(agg, vcol, rcol, ccol, row_ref, col_ref, raw, r0, r1):
+        cond = {}
+        if row_ref:
+            cond[rcol] = row_ref
+        if col_ref:
+            cond[ccol] = col_ref
+        if agg == "count":
+            return build_countifs_formula(cond, source_sheet=raw, first_row=r0, last_row=r1)
+        return build_sumifs_formula(vcol, cond, source_sheet=raw, first_row=r0, last_row=r1)
+
+    def _build_pivot_sheet(self, wb, spec):
+        ws = wb.create_sheet(title=spec["sheet_name"])
+        row_field, col_field = spec["row_field"], spec["col_field"]
+        val_field = spec["value_field"]
+        agg = spec.get("agg", "sum")
+        label = spec.get("total_label", "合计")
+        total_col = bool(spec.get("total_col", True))
+        total_row = bool(spec.get("total_row", True))
+
+        raw, r0, r1 = self.output_sheet_cfg["raw_copy"], self.first_row, self.last_row
+        vcol, rcol, ccol = self._col(val_field), self._col(row_field), self._col(col_field)
+
+        row_keys = self._group_keys(row_field)
+        col_keys = self._group_keys(col_field)
+        if spec.get("col_sort") == "desc":            # 按列合计降序（默认保持首次出现顺序）
+            col_keys.sort(key=lambda kv: -self._pivot_value(
+                row_field, col_field, val_field, agg, None, kv[0]))
+
+        header = ([row_field] + [c for c, _v in col_keys]
+                  + ([label] if total_col else []))
+        ws.append([""])
+        ws.append(header)
+
+        for i, (rk, rv) in enumerate(row_keys):
+            row = self.out_first_row + i
+            ws.cell(row, 1).value = rv
+            for j, (ck, _cv) in enumerate(col_keys):
+                col_ref = "%s$2" % self._col_letter(2 + j)
+                self._put(ws, row, 2 + j,
+                          self._pivot_formula(agg, vcol, rcol, ccol, "$A%d" % row,
+                                              col_ref, raw, r0, r1),
+                          self._pivot_value(row_field, col_field, val_field, agg, rk, ck))
+            if total_col:                             # 行合计：只按行条件求和（仍引用数据源）
+                self._put(ws, row, 2 + len(col_keys),
+                          self._pivot_formula(agg, vcol, rcol, ccol, "$A%d" % row,
+                                              None, raw, r0, r1),
+                          self._pivot_value(row_field, col_field, val_field, agg, rk, None))
+
+        if total_row:
+            trow = self.out_first_row + len(row_keys)
+            ws.cell(trow, 1).value = label
+            for j, (ck, _cv) in enumerate(col_keys):
+                self._put(ws, trow, 2 + j,
+                          self._pivot_formula(agg, vcol, rcol, ccol, None,
+                                              "%s$2" % self._col_letter(2 + j),
+                                              raw, r0, r1),
+                          self._pivot_value(row_field, col_field, val_field, agg, None, ck))
+            if total_col:
+                if agg == "count":
+                    f = build_counta_formula(rcol, source_sheet=raw,
+                                             first_row=r0, last_row=r1)
+                else:
+                    f = build_sum_all_formula(vcol, source_sheet=raw,
+                                              first_row=r0, last_row=r1)
+                self._put(ws, trow, 2 + len(col_keys), f,
+                          self._pivot_value(row_field, col_field, val_field, agg, None, None))
+            for cc in range(1, len(header) + 1):
+                ws.cell(trow, cc).font = Font(bold=True)
+
+        apply_sheet_format(
+            ws, self.style_cfg,
+            num_cols=[c for c, _v in col_keys] + ([label] if total_col else []),
+            pct_cols=[], int_cols=[], date_cols=[],
+            cat_cols=[row_field], text_cols=[],
+            header_row_idx=2,
+            sheet_title=spec.get("sheet_title") or spec["sheet_name"],
+            total_title_cols=len(header),
+            display_values=self.expected.get(ws.title),
+        )
+        return ws
 
     # ============================================================ 输出
 
@@ -651,6 +1139,21 @@ class GeneralStatSkillEngine:
         header_row = self.input_cfg["header_row"]
         field_to_col = self.build_header_col_mapping(raw_ws, header_row)
 
+        # 「原始数据」可能自带公式（报表尾部的「合计」行等）。openpyxl 保存时会丢掉
+        # 公式的**缓存值**，程序化读取（data_only=True）遂读到空，自检 R2a 会判为
+        # 与源表不一致。这里把源文件里已有的缓存值原样登记进 expected，
+        # 保存后由 cached_values 写回 <v>，保证「原始数据」逐格与源表一致。
+        _cache_wb = load_workbook(self.input_excel_path, data_only=True)
+        _cache_ws = _cache_wb[self.input_cfg["sheet_name"]]
+        for _row in raw_ws.iter_rows():
+            for _cell in _row:
+                if isinstance(_cell.value, str) and _cell.value.startswith("="):
+                    _cached = _cache_ws.cell(_cell.row, _cell.column).value
+                    if _cached is not None:
+                        self.expected.setdefault(raw_ws.title, {})[
+                            _cell.coordinate] = _cached
+        _cache_wb.close()
+
         # 有效列数 = 从第 1 列起连续非空表头的个数（排除源文件自带的幽灵列）
         raw_cols = 0
         for c in range(1, raw_ws.max_column + 1):
@@ -685,6 +1188,9 @@ class GeneralStatSkillEngine:
         self.run_task2_formula_build(wb, field_to_col)
         self.run_task3_multi_dim_formula_build(wb, field_to_col)
         self.run_overview_formula_build(wb, field_to_col)
+        # 配置 `extra_sheets` 声明的**新增工作表**（group / pivot 两种类型），
+        # 表名与字段全部来自 JSON —— 加表 / 表内加·删·改字段都不需要改本文件。
+        self.run_extra_sheets_build(wb, field_to_col)
 
         # 子集导出（--only）：先做公式依赖闭包，再按配置表序裁剪掉其余工作表。
         # 不裁剪「原始数据」这类被引用表，避免公式变成 #REF!。

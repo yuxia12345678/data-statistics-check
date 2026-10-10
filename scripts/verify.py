@@ -33,6 +33,7 @@ except Exception:
 # 放在 `from openpyxl import ...` 之前：齐全则跳过安装直接自检，缺失则离线优先补齐。
 # 实现见 scripts/deps_check.py。
 from deps_check import DependencyError, ensure_dependencies
+from config_validator import kind_of_name
 
 try:
     ensure_dependencies()
@@ -67,6 +68,7 @@ class _Config:
         t3 = cfg["task3_multi_dim"]
 
         # ---- 工作表名、顺序与表头大标题
+        self.INPUT_CFG = dict(cfg.get("input") or {})
         self.SHEET_RAW = names["raw_copy"]
         self.SHEET_MERGE = names["task1_result"]
         self.SHEET_REASON = names["task2"]
@@ -89,6 +91,21 @@ class _Config:
                               if r["agg_strategy"] == "distinct_join"), "；")
         self.OVERVIEW_LABELS = [m["output_field"] for m in t3["overview_metrics"]]
         self.FIELD_KIND = dict(cfg["field_kind"])
+
+        # ---- 声明式新增工作表（extra_sheets）：表名/大标题/动态列表头类型的事实源。
+        # 这些表由配置声明生成（字段增删改也只改配置），因此自检也必须配置驱动：
+        # 行数、逐格数值、排序三组断言见 Checker.r5x/r6x/r7x。
+        self.EXTRA_SHEETS = list(cfg.get("extra_sheets") or [])
+        for _spec in self.EXTRA_SHEETS:
+            self.SHEET_TITLES.setdefault(
+                _spec["sheet_name"],
+                _spec.get("sheet_title") or _spec["sheet_name"])
+        # 交叉表的列是**数据动态展开**的（如型号名），无法预先登记进 field_kind，
+        # 故按该表 value_field 的类型反查（生成侧也按同一规则对齐与设格式）。
+        self.PIVOT_VALUE_KIND = {
+            _spec["sheet_name"]: self.FIELD_KIND.get(_spec["value_field"], "num")
+            for _spec in self.EXTRA_SHEETS if _spec.get("type", "group") == "pivot"
+        }
         # 任务2「占比」分母定义：原始数据两列合计之差（被减数合计 − 减数合计）。
         # 与生成侧 stat_engine._resolve_ratio_denominator 共用同一份配置。
         self.T2_RATIO_DENOM = dict(t2.get("ratio_denominator") or {})
@@ -99,6 +116,11 @@ class _Config:
         self.T2_AMOUNT_FIELD = t2["amount_field"]
         self.T2_SORT_FIELD = t2.get("sort_by_field") or t2["amount_field"]
         self.T2_RATIO_FIELD = t2.get("ratio_field_name", "占比")
+        # 任务2 指标清单（配置驱动）：[(输出列名, (来源字段, 聚合)), ...]，
+        # 指标列从第 3 列起、占比列紧随其后 —— 增删指标时自检自动跟随。
+        self.T2_METRICS = [(k, (v[0], v[1])) for k, v in (t2.get("metrics") or {}).items()]
+        self.T2_METRIC_FIELDS = list(dict.fromkeys(
+            [self.PRIMARY_KEY] + [v[0] for _k, v in self.T2_METRICS]))
 
         # 维度表指标：求和项（保持 dim_metrics 声明顺序）+ 去重计数项 + 派生比率列表
         self.DIM_SUM_OUTPUTS = [k for k, v in t3["dim_metrics"].items() if v[1] == "sum"]
@@ -122,6 +144,14 @@ class _Config:
                 _totals.append(_m["source_field"])
         _totals.append(self.T2_AMOUNT_FIELD)
         _totals += [v for v in self.T2_RATIO_DENOM.values() if v]
+        # 声明式新增工作表用到的源字段（供源事实侧独立重算）
+        for _spec in (cfg.get("extra_sheets") or []):
+            for _c in (_spec.get("columns") or []):
+                if _c.get("field"):
+                    _totals.append(_c["field"])
+            for _k in ("value_field", "group_field", "row_field", "col_field"):
+                if _spec.get(_k):
+                    _totals.append(_spec[_k])
         self.TOTAL_FIELDS = list(dict.fromkeys(_totals))
 
         # ---- 样式常量（全部取自 style_setting）
@@ -166,6 +196,20 @@ class _Config:
                 return o
         return self.DIM_SUM_OUTPUTS[-1] if self.DIM_SUM_OUTPUTS else None
 
+    def kind_of(self, sheet_name, header):
+        """表头 → 字段类型（**数字格式与对齐的唯一判据**，R8/R9 公用）。
+
+        查表顺序：`field_kind`（含去「总」前缀 / 去末尾括号说明，见 `kind_of_name`）→
+        交叉表（pivot）**数据动态展开**的列 → 该表 value_field 的类型 → text。
+        新增工作表的列只需在 field_kind 里登记（配置内），代码零改动。
+        """
+        kind = kind_of_name(self.FIELD_KIND, header)
+        if kind:
+            return kind
+        if sheet_name in self.PIVOT_VALUE_KIND:
+            return self.PIVOT_VALUE_KIND[sheet_name]
+        return "text"
+
 
 C = None    # 由 main() 依据 --config 构建；其余函数在运行期引用
 
@@ -206,7 +250,21 @@ def source_facts(path, profile=None, wb=None):
             col_of[str(v).strip()] = c
 
     raw = []          # [(row, {field: value})]
+    # 数据区边界：与生成侧共享同一份配置口径 `input.data_end`。其他行业源表常带
+    # 「合计」行与页脚行，必须按配置排除，否则会被当成明细，源事实本身就错了。
+    _de = C.INPUT_CFG.get("data_end") or {}
+    _kw = [str(k).replace(" ", "") for k in (_de.get("stop_keywords") or [])]
+    _stop_blank = bool(_de.get("stop_on_blank_first_col", False))
+    _end_row = int(_de["last_row"]) if _de.get("last_row") else None
     for r in range(header_row + 1, ws.max_row + 1):
+        if _end_row is not None and r > _end_row:
+            break
+        _fv = ws.cell(r, 1).value
+        _ft = "" if _fv is None else str(_fv).replace(" ", "").strip()
+        if _stop_blank and _ft == "":
+            break
+        if _kw and any(_ft.startswith(k) for k in _kw):
+            break
         rec = {}
         empty = True
         for f, c in col_of.items():
@@ -281,10 +339,20 @@ def source_facts(path, profile=None, wb=None):
             if not fill_blank:
                 continue
             k = "未填写"
-        d = b.setdefault(k, {"unpaid": 0.0, "codes": set(), "rows": 0})
+        d = b.setdefault(k, {"unpaid": 0.0, "codes": set(), "rows": 0,
+                             "sums": collections.defaultdict(float),
+                             "codes_by": collections.defaultdict(set)})
         d["unpaid"] += num(rec.get(C.T2_AMOUNT_FIELD))
         d["rows"] += 1
         d["codes"].add(key(rec, C.PRIMARY_KEY))
+        # 按配置声明的任务2 指标来源字段预聚（供 R6-原因 逐列独立重算）
+        for _f in C.T2_METRIC_FIELDS:
+            if not _f:
+                continue
+            d["sums"][_f] += num(rec.get(_f))
+            _v = key(rec, _f)
+            if _v:
+                d["codes_by"][_f].add(_v)
     facts["reasons"] = b
     return facts
 
@@ -427,12 +495,15 @@ class Checker(object):
 
         def cell_style(cell):
             f, fill, b, a = cell.font, cell.fill, cell.border, cell.alignment
+            # 布尔型样式属性统一按 bool 比较：openpyxl 存取一轮会把"显式 False"
+            # （源文件里的 wrapText="0"）归一成缺省 None，语义相同但对象不相等，
+            # 不归一化会把"未经修改"误判成样式被改动。
             return ((fill.fill_type if fill else None,
                      _color(fill.start_color) if fill else None),
-                    (f.bold, f.italic, f.size, f.name, _color(f.color)),
+                    (bool(f.bold), bool(f.italic), f.size, f.name, _color(f.color)),
                     (getattr(b.left, "style", None), getattr(b.right, "style", None),
                      getattr(b.top, "style", None), getattr(b.bottom, "style", None)),
-                    (a.horizontal, a.vertical, a.wrap_text))
+                    (a.horizontal, a.vertical, bool(a.wrap_text)))
 
         def width_of(sheet, idx):
             return sheet.column_dimensions[get_column_letter(idx)].width
@@ -694,12 +765,30 @@ class Checker(object):
             if d is None:
                 bad.append((r, k, "源中无此分类"))
                 continue
-            for col, e in ((3, d["unpaid"]), (4, len(d["codes"])), (5, d["rows"]),
-                           (6, d["unpaid"] / reason_denom if reason_denom else None)):
-                if not close(ws.cell(r, col).value, e):
-                    bad.append((r, k, col, ws.cell(r, col).value, e))
-        self.add("R6-原因", "%s 汇总 4 项指标与源事实一致（占比分母 =「%s」合计 −「%s」合计）"
-                 % (C.T2_GROUP_FIELD, _dn.get("minuend_field", ""), _dn.get("subtrahend_field", "")),
+            # 指标列：按配置的 metrics 逐列重算（sum / nunique / count）
+            exp_cells = []
+            for _out, (_src, _agg) in C.T2_METRICS:
+                if _agg == "sum":
+                    exp_cells.append(d["sums"].get(_src))
+                elif _agg == "nunique":
+                    exp_cells.append(len(d["codes_by"].get(_src, set()))
+                                     if _src != C.PRIMARY_KEY else len(d["codes"]))
+                elif _agg in ("count", "count_rows"):
+                    exp_cells.append(d["rows"])
+                else:
+                    exp_cells.append(None)
+            for i, e in enumerate(exp_cells):
+                if not close(ws.cell(r, 3 + i).value, e):
+                    bad.append((r, k, 3 + i, ws.cell(r, 3 + i).value, e))
+            # 占比列：指标列之后紧跟的一列
+            ratio_col = 3 + len(exp_cells)
+            if not close(ws.cell(r, ratio_col).value,
+                         d["unpaid"] / reason_denom if reason_denom else None):
+                bad.append((r, k, ratio_col, ws.cell(r, ratio_col).value,
+                            d["unpaid"] / reason_denom if reason_denom else None))
+        self.add("R6-原因", "%s 汇总 %d 项指标与源事实一致（占比分母 =「%s」合计 −「%s」合计）"
+                 % (C.T2_GROUP_FIELD, len(C.T2_METRICS) + 1,
+                    _dn.get("minuend_field", ""), _dn.get("subtrahend_field", "")),
                  not bad, "差异 %s（源字段全空时本项为空表，自动通过）" % bad[:5])
 
     # ---------- R7 排序
@@ -743,8 +832,7 @@ class Checker(object):
             ws = self.wbf[name]
             headers = [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
             for c, h in enumerate(headers, start=1):
-                kind = C.FIELD_KIND.get(str(h).replace("总", "") if h else "", None) or \
-                       C.FIELD_KIND.get(h, "text")
+                kind = C.kind_of(name, h)
                 if name == C.SHEET_OVERVIEW and c == 2:
                     continue  # 逐行类型不同，单独核
                 want = {"money": money, "pct": C.PCT_FORMAT, "int": C.INT_FORMAT,
@@ -757,12 +845,21 @@ class Checker(object):
                         bad.append((name, ws.cell(r, c).coordinate, nf, want))
                         break
         ws = self.wbf[C.SHEET_OVERVIEW]
-        want_by_row = [money, money, money, money, C.PCT_FORMAT, C.INT_FORMAT,
-                       C.INT_FORMAT, C.INT_FORMAT]
-        for i, w in enumerate(want_by_row):
+        # 总览每行的格式：与生成侧用**同一个**解析器 —— 先按 field_kind 反查该指标
+        # （支持「总合同金额（万元）」写法），查不到再按 agg_operator 兜底。
+        fmt_by_kind = {"money": money, "num": money, "pct": C.PCT_FORMAT,
+                       "int": C.INT_FORMAT, "date": C.DATE_FORMAT_SRC}
+        fmt_by_op = {"sum": money, "avg": money, "ratio": C.PCT_FORMAT,
+                     "nunique": C.INT_FORMAT, "count_rows": C.INT_FORMAT}
+        for i, m in enumerate(C.OVERVIEW_METRICS):
+            want = fmt_by_kind.get(C.kind_of(C.SHEET_OVERVIEW, m.get("output_field")))
+            if want is None:
+                want = fmt_by_op.get(m.get("agg_operator"))
+            if want is None:
+                continue
             nf = ws.cell(3 + i, 2).number_format
-            if nf != w:
-                bad.append((C.SHEET_OVERVIEW, ws.cell(3 + i, 2).coordinate, nf, w))
+            if nf != want:
+                bad.append((C.SHEET_OVERVIEW, ws.cell(3 + i, 2).coordinate, nf, want))
         dec = len(money.split(".")[1]) if "." in money else 0
         self.add("R8", "金额千分位+%d位小数、百分比2位小数、整数与日期格式合规"
                  % dec, not bad, "不合规 %s" % bad[:8])
@@ -777,7 +874,7 @@ class Checker(object):
             nc = self.raw_ncols if name == C.SHEET_RAW else ws.max_column
             headers = [ws.cell(hr, c).value for c in range(1, nc + 1)]
             for c, h in enumerate(headers, start=1):
-                kind = C.FIELD_KIND.get(h, "text")
+                kind = C.kind_of(name, h)
                 if name == C.SHEET_OVERVIEW:
                     kind = "text" if c == 1 else "num"
                 want = align.get(kind, "left")
@@ -867,8 +964,11 @@ class Checker(object):
 
     # ---------- R13 冻结
     def r13_freeze(self):
+        # 「原始数据」零美化时，它的冻结窗格属于源文件状态（由 R2d 与源表逐项比对），
+        # 不在此断言；其余工作表（含配置声明的 extra_sheets）一律冻结表头首行。
+        skip = () if C.raw_beautify else (C.SHEET_RAW,)
         bad = [(n, self.wbf[n].freeze_panes) for n in self.profile["sheet_order"]
-               if self.wbf[n].freeze_panes != C.FREEZE_PANES]
+               if n not in skip and self.wbf[n].freeze_panes != C.FREEZE_PANES]
         self.add("R13", "全部工作表冻结表头首行（freeze=%s）" % C.FREEZE_PANES,
                  not bad, "不合规 %s" % bad)
 
@@ -1001,9 +1101,293 @@ class Checker(object):
         self.add("R18", "COUNTIF/COUNTIFS 条件参数均非裸区间（空白会被当作 0 → #DIV/0!）",
                  not bad, "检查 %d 处条件，违规 %d 处 %s" % (checked, len(bad), bad[:4]))
 
+    # ================================================================ 声明式新增工作表
+    # 断言必须与生成侧一样**配置驱动**：表名 / 列名 / 聚合 / 排序全部取自 extra_sheets，
+    # 数值用源记录独立重算（不复用 stat_engine 的任何结果）。因此「新增工作表」与
+    # 「表内加·删·改字段」在自检侧同样是零代码改动。
+
+    EXTRA_AGG_NUMERIC = ("sum", "count", "nunique", "ratio")
+
+    @staticmethod
+    def _ex_text(v):
+        """分组键规范化（与生成侧 text_of 同语义：去首尾空白，None → 空串）。"""
+        return "" if v is None else (v if isinstance(v, str) else str(v)).strip()
+
+    @classmethod
+    def _ex_rows(cls, f, conds):
+        """按 {字段: 键} 过滤源记录；键为 None 表示该字段不参与过滤。"""
+        out = []
+        for _r, rec in f["raw"]:
+            if all(cls._ex_text(rec.get(fld)) == key
+                   for fld, key in conds.items() if key is not None):
+                out.append(rec)
+        return out
+
+    def _ex_keys(self, f, field):
+        """某字段的去重取值（首次出现顺序，空白不计）——独立于生成侧重算。"""
+        if not field:
+            return [None]
+        seen, out = [], []
+        for _r, rec in f["raw"]:
+            k = self._ex_text(rec.get(field))
+            if not k or k in seen:
+                continue
+            seen.append(k)
+            out.append(k)
+        return out
+
+    def _ex_sum(self, recs, field):
+        total = 0.0
+        for rec in recs:
+            v = rec.get(field)
+            if v in (None, ""):
+                continue
+            try:
+                total += float(v)
+            except (TypeError, ValueError):
+                pass
+        return total
+
+    def _ex_distinct(self, recs, field):
+        return len({self._ex_text(rec.get(field)) for rec in recs
+                    if self._ex_text(rec.get(field)) != ""})
+
+    def _ex_cell(self, col, spec, f, recs, vals, whole=False):
+        """一个声明列的期望值（独立重算）；vals = 本行（或合计行）已算出的「列名→值」。"""
+        agg = col["agg"]
+        if agg == "sum":
+            return self._ex_sum(recs, col["field"])
+        if agg == "count":
+            if not whole:
+                return len(recs)
+            gf = spec.get("group_field")
+            if not gf:
+                return len(f["raw"])
+            return sum(1 for _r, rec in f["raw"] if self._ex_text(rec.get(gf)) != "")
+        if agg == "nunique":
+            return self._ex_distinct(recs, col["field"])
+        if agg in ("first_non_null", "last_non_null"):
+            seq = recs if agg == "first_non_null" else list(reversed(recs))
+            for rec in seq:
+                if self._ex_text(rec.get(col["field"])) != "":
+                    return rec.get(col["field"])
+            return ""
+        if agg == "ratio":
+            def operand(ref):
+                if isinstance(ref, (int, float)) and not isinstance(ref, bool):
+                    return float(ref)
+                s = str(ref)
+                if s.startswith("global:"):
+                    return self._ex_sum([r for _i, r in f["raw"]], s.split(":", 1)[1])
+                if s.startswith("literal:"):
+                    return float(s.split(":", 1)[1])
+                return vals.get(s)
+
+            den_cfg = col["denominator"]
+            if isinstance(den_cfg, dict):
+                den = (self._ex_sum([r for _i, r in f["raw"]], den_cfg["minuend_field"])
+                       - self._ex_sum([r for _i, r in f["raw"]],
+                                      den_cfg["subtrahend_field"]))
+            else:
+                den = operand(den_cfg)
+            num = operand(col["numerator"])
+            try:
+                num, den = float(num), float(den)
+            except (TypeError, ValueError):
+                return None
+            return (num / den) if den else None
+        return None
+
+    def _ex_group_expected(self, spec, f, key):
+        """某分组行的全部列期望值（两遍：先非 ratio，再 ratio——列序不受限）。"""
+        cols = list(spec["columns"])
+        gfield = spec.get("group_field")
+        recs = self._ex_rows(f, {gfield: key} if gfield else {})
+        vals = {}
+        for c in cols:
+            if c["agg"] == "group":
+                vals[c["name"]] = key
+            elif c["agg"] not in ("ratio", "seq", "const", "distinct_join"):
+                vals[c["name"]] = self._ex_cell(c, spec, f, recs, vals)
+        for c in cols:
+            if c["agg"] == "ratio":
+                vals[c["name"]] = self._ex_cell(c, spec, f, recs, vals)
+        return vals
+
+    def _ex_total_expected(self, spec, f):
+        """合计行的全部列期望值（全表口径）。"""
+        cols = list(spec["columns"])
+        recs = [r for _i, r in f["raw"]]
+        vals = {}
+        for c in cols:
+            if c["agg"] in ("sum", "count", "nunique"):
+                vals[c["name"]] = self._ex_cell(c, spec, f, recs, vals, whole=True)
+        for c in cols:
+            if c["agg"] == "ratio":
+                vals[c["name"]] = self._ex_cell(c, spec, f, recs, vals, whole=True)
+        return vals
+
+    def _headers(self, name):
+        ws = self.wbv[name]
+        return [ws.cell(2, c).value for c in range(1, ws.max_column + 1)]
+
+    # ---------- R5x 新增工作表行数
+    def r5x_declared_rowcounts(self):
+        if not C.EXTRA_SHEETS:
+            return
+        f = self.srcf
+        bad = []
+        for spec in C.EXTRA_SHEETS:
+            ws = self.wbv[spec["sheet_name"]]
+            if spec.get("type", "group") == "pivot":
+                n = len(self._ex_keys(f, spec["row_field"]))
+                extra = 1 if spec.get("total_row", True) else 0
+            else:
+                n = len(self._ex_keys(f, spec.get("group_field")))
+                extra = 1 if spec.get("total_row") else 0
+            got = ws.max_row - 2
+            if got != n + extra:
+                bad.append((spec["sheet_name"], got, n + extra))
+        self.add("R5x", "新增工作表行数 = 配置声明的分组数（%d 张）" % len(C.EXTRA_SHEETS),
+                 not bad, "不合规 %s" % bad)
+
+    # ---------- R6x 新增工作表数值
+    def r6x_declared_values(self):
+        for spec in C.EXTRA_SHEETS:
+            bad = (self._check_pivot_values(spec) if spec.get("type", "group") == "pivot"
+                   else self._check_group_values(spec))
+            self.add("R6x-" + spec["sheet_name"],
+                     "「%s」全部单元格与源事实一致（配置驱动·独立重算）" % spec["sheet_name"],
+                     not bad, "差异 %d 处 %s" % (len(bad), bad[:6]))
+
+    def _check_group_values(self, spec):
+        f, name = self.srcf, spec["sheet_name"]
+        ws = self.wbv[name]
+        headers = self._headers(name)
+        idx = {h: i + 1 for i, h in enumerate(headers) if h}
+        cols = list(spec["columns"])
+        gname = next((c["name"] for c in cols if c["agg"] == "group"), None)
+        if not gname or gname not in idx:
+            return [("缺少 agg=group 的分组列", gname)]
+        total_row = bool(spec.get("total_row"))
+        bad = []
+        n_data = ws.max_row - 2 - (1 if total_row else 0)
+        got_keys = [self._ex_text(ws.cell(3 + i, idx[gname]).value) for i in range(n_data)]
+        exp_keys = self._ex_keys(f, spec.get("group_field"))
+        if sorted(got_keys) != sorted(exp_keys):
+            bad.append(("分组取值集合不一致", sorted(got_keys)[:5], sorted(exp_keys)[:5]))
+        for i, key in enumerate(got_keys):
+            row = 3 + i
+            vals = self._ex_group_expected(spec, f, key)
+            if spec.get("serial"):
+                got = ws.cell(row, idx.get(spec["serial"], 1)).value
+                if not close(got, i + 1):
+                    bad.append((row, "序号", got, i + 1))
+            for c in cols:
+                if c["agg"] in ("const", "distinct_join") or c["name"] not in idx:
+                    continue
+                got = ws.cell(row, idx[c["name"]]).value
+                exp = (i + 1) if c["agg"] == "seq" else vals.get(c["name"])
+                if not close(got if got is not None else "",
+                             exp if exp is not None else ""):
+                    bad.append((row, c["name"], got, exp))
+        if total_row:
+            trow = ws.max_row
+            tvals = self._ex_total_expected(spec, f)
+            for c in cols:
+                if c["agg"] not in self.EXTRA_AGG_NUMERIC or c["name"] not in idx:
+                    continue
+                got = ws.cell(trow, idx[c["name"]]).value
+                exp = tvals.get(c["name"])
+                if not close(got if got is not None else "",
+                             exp if exp is not None else ""):
+                    bad.append((trow, c["name"], got, exp))
+        return bad
+
+    def _check_pivot_values(self, spec):
+        f, name = self.srcf, spec["sheet_name"]
+        ws = self.wbv[name]
+        headers = self._headers(name)
+        row_field, col_field = spec["row_field"], spec["col_field"]
+        vfield = spec["value_field"]
+        agg = spec.get("agg", "sum")
+        label = spec.get("total_label", "合计")
+        total_row = bool(spec.get("total_row", True))
+        total_col = bool(spec.get("total_col", True))
+        bad = []
+        n_data = ws.max_row - 2 - (1 if total_row else 0)
+        got_rows = [self._ex_text(ws.cell(3 + i, 1).value) for i in range(n_data)]
+        exp_rows = sorted(self._ex_keys(f, row_field))
+        if sorted(got_rows) != exp_rows:
+            bad.append(("行标签集合不一致", sorted(got_rows)[:4], exp_rows[:4]))
+        n_cols = ws.max_column - 1 - (1 if total_col else 0)
+        got_cols = [self._ex_text(headers[c - 1]) for c in range(2, 2 + n_cols)]
+        exp_cols = sorted(self._ex_keys(f, col_field))
+        if sorted(got_cols) != exp_cols:
+            bad.append(("列标签集合不一致", sorted(got_cols)[:4], exp_cols[:4]))
+        idx = {self._ex_text(h): c for c, h in enumerate(headers, start=1) if c > 1}
+
+        def value(row_key, col_key):
+            recs = self._ex_rows(f, {row_field: row_key, col_field: col_key})
+            return len(recs) if agg == "count" else self._ex_sum(recs, vfield)
+
+        for i, rk in enumerate(got_rows):
+            row = 3 + i
+            for ck in got_cols:
+                if ck not in idx:
+                    bad.append((row, ck, "列头缺失"))
+                    continue
+                got, exp = ws.cell(row, idx[ck]).value, value(rk, ck)
+                if not close(got, exp):
+                    bad.append((row, rk, ck, got, exp))
+            if total_col and label in idx:
+                got, exp = ws.cell(row, idx[label]).value, value(rk, None)
+                if not close(got, exp):
+                    bad.append((row, rk, "行合计", got, exp))
+        if total_row:
+            trow = ws.max_row
+            for ck in got_cols:
+                if ck not in idx:
+                    continue
+                got, exp = ws.cell(trow, idx[ck]).value, value(None, ck)
+                if not close(got, exp):
+                    bad.append((trow, "列合计", ck, got, exp))
+            if total_col and label in idx:
+                got, exp = ws.cell(trow, idx[label]).value, value(None, None)
+                if not close(got, exp):
+                    bad.append((trow, "总计", got, exp))
+        return bad
+
+    # ---------- R7x 新增工作表排序
+    def r7x_declared_order(self):
+        if not C.EXTRA_SHEETS:
+            return
+        bad = []
+        for spec in C.EXTRA_SHEETS:
+            sb = spec.get("sort_by")
+            if not sb or spec.get("type", "group") == "pivot":
+                continue
+            name = spec["sheet_name"]
+            headers = self._headers(name)
+            if sb not in headers:
+                bad.append((name, "排序列不存在", sb))
+                continue
+            ws = self.wbv[name]
+            sc = headers.index(sb) + 1
+            n_data = ws.max_row - 2 - (1 if spec.get("total_row") else 0)
+            vals = [ws.cell(3 + i, sc).value or 0 for i in range(n_data)]
+            rev = bool(spec.get("sort_desc", True))
+            ok = all((vals[i] >= vals[i + 1]) if rev else (vals[i] <= vals[i + 1])
+                     for i in range(len(vals) - 1))
+            if not ok:
+                bad.append((name, sb, vals[:6]))
+        self.add("R7x", "新增工作表按配置的排序字段与方向排列", not bad, "不合规 %s" % bad)
+
     def run_all(self):
         for fn in (self.r1_sheets, self.r2_raw_intact, self.r3_formulas, self.r4_errors,
-                   self.r5_rowcounts, self.r6_values, self.r7_order, self.r8_formats,
+                   self.r5_rowcounts, self.r6_values, self.r7_order,
+                   self.r5x_declared_rowcounts, self.r6x_declared_values,
+                   self.r7x_declared_order, self.r8_formats,
                    self.r9_align, self.r10_header, self.r11_zebra, self.r12_border,
                    self.r13_freeze, self.r14_width, self.r15_title, self.r16_cf,
                    self.r17_cf_formula, self.r18_criteria_guard):
