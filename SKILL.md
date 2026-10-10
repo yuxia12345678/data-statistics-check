@@ -1,6 +1,6 @@
 ---
 name: data-statistics-check
-description: '读取合同开票及回款核对明细 Excel，一键完成数据统计核对全流程：同合同号多行合并、未回款原因分类汇总、区域/部门/账龄/客户分类多维统计与统计总览，自动建表、设置格式并统一美化，输出 8 张固定工作表。严守三条硬性规则：统计值一律用 Excel 动态公式（禁止硬编码数值、并注入缓存值供程序化读取）、原始数据零篡改（内容/行列顺序/单元格格式均不动）、全部工作表统一美化。触发场景：用户提供合同开票及回款核对表或同结构明细表，要求数据核对、合同号合并、回款分析、分类汇总、多维统计报表或批量出表美化。换 config JSON 即换业务（字段/口径/维度/表名/样式全部配置驱动，代码零业务字面量；换行业数据、新增工作表、既有表加删改字段三件事均**只改 JSON**，已用订单流水与智能手表零售两个案例实测）。入口 scripts/run_skill.py，交付前须用 scripts/verify.py 自检全通过（退出码 0）。不适用于非结构化 PDF/图片识别。'
+description: '读取合同开票及回款核对明细 Excel，一键完成数据统计核对全流程：同合同号多行合并、未回款原因分类汇总、区域/部门/账龄/客户分类多维统计与统计总览，自动建表、设置格式并统一美化，输出 8 张固定工作表。严守三条硬性规则：统计值一律用 Excel 动态公式（禁止硬编码数值、并注入缓存值供程序化读取）、原始数据零篡改（内容/行列顺序/单元格格式均不动）、全部工作表统一美化。触发场景：用户提供合同开票及回款核对表或同结构明细表，要求数据核对、合同号合并、回款分析、分类汇总、多维统计报表或批量出表美化。换 config JSON 即换业务（字段/口径/维度/表名/样式全部配置驱动，代码零业务字面量；换行业数据、新增工作表、既有表加删改字段三件事均**只改 JSON**，已用订单流水等另一套业务数据实测）。入口 scripts/run_skill.py，交付前须用 scripts/verify.py 自检全通过（退出码 0）。不适用于非结构化 PDF/图片识别。'
 ---
 
 # 合同数据统计核对
@@ -64,10 +64,10 @@ data-statistics-check/
 │                               #   另含 output{input_dir,output_dir,keep_latest_only}：
 │                               #   产物目录与「只留最新一次结果」的清理开关
 ├── 示例/                        # 可配置性验证（换配置即换业务，代码不动）
-│   ├── README.md               #   三套案例差异对照表 + 运行命令
-│   ├── 案例B-订单流水统计/      #   order_settlement.json + 示例输入 + 实测产出
-│   └── 案例C-智能手表销售统计/  #   watch_sales.json + 示例输入 + 实测产出
-│                               #   换行业数据 + extra_sheets 加表 + 既有表增删改字段
+│   ├── README.md               #   两套案例差异对照表 + 运行命令
+│   └── 案例B-订单流水统计/      #   order_settlement.json + 示例输入 + 实测产出
+│                               #   （换行业 + extra_sheets 加表 + 既有表增删改字段的能力
+│                               #    见 references/配置驱动规范.md）
 ├── references/                 # 细节依据（各自是其主题的唯一定义处）
 │   ├── 口径与公式规范.md         #   口径与公式模板的唯一定义处（含验证证据）
 │   ├── 配置驱动规范.md           #   换行业/加表/改字段的配置键语义（配置驱动能力唯一定义处）
@@ -310,7 +310,7 @@ python3 scripts/verify.py \
 
 `verify.py` 已把下列项做成自动断言，**不要凭肉眼代替执行**
 （项数 = `30 + 4 × 维度表数`；声明了 `extra_sheets` 时再叠加 `2 + 新增表数`；
-案例A/B 为 46 项，案例C 为 42 项）：
+本案 4 个维度表 → 46 项）：
 
 - 工作表名称与顺序（R1）
 - 原始数据逐格值 + 数字格式 + 表头 + 行数（R2a–R2d）
@@ -347,11 +347,15 @@ python3 scripts/verify.py \
 > **配置键的确切语义与边界见 `references/配置驱动规范.md`**（本表只是索引）。
 > 三类改动都**只改 JSON**：生成侧与自检侧的期望值同步随配置派生。
 
-| 想做的事 | 改哪些配置键 | 实测案例 |
-|---|---|---|
-| **换行业数据** | `input.sheet_name` / `input.header_row`；源表带汇总行或页脚行时加 `input.data_end`（`last_row` 或 `stop_keywords` + `stop_on_blank_first_col`）；再改字段名/口径/维度/表名/排序/格式 | 案例C（智能手表零售，表头第 3 行 + 尾部「合  计」行 + 页脚行） |
-| **新增工作表** | 顶层 `extra_sheets`：`type=group`（逐分组一行，可带合计行与排序）或 `type=pivot`（行列交叉表）；再把表名加进 `profiles.<profile>.sheet_order` | 案例C 新增「机型销售统计」(group) 与「月份×机型交叉表」(pivot) |
-| **已有表加/删/改字段** | 合并表 `task1_group_merge.agg_strategy_list`；分类汇总 `task2_special_agg.metrics`（+ `ratio_field_name` / `ratio_denominator`）；维度表 `task3_multi_dim.dim_metrics` + `derived_ratio_list`；总览 `task3_multi_dim.overview_metrics`。同时把新列头登记进对应 `*_fields` 与 `field_kind` | 案例C 合并表删「单价(元)」、增「月份」拼接列；汇总表指标由 3 项改 2 项；维度指标与派生比率全部替换；总览 8 项 → 7 项 |
+| 想做的事 | 改哪些配置键 |
+|---|---|
+| **换行业数据** | `input.sheet_name` / `input.header_row`；源表带汇总行或页脚行时加 `input.data_end`（`last_row` 或 `stop_keywords` + `stop_on_blank_first_col`）；再改字段名/口径/维度/表名/排序/格式 |
+| **新增工作表** | 顶层 `extra_sheets`：`type=group`（逐分组一行，可带合计行与排序）或 `type=pivot`（行列交叉表）；再把表名加进 `profiles.<profile>.sheet_order` |
+| **已有表加/删/改字段** | 合并表 `task1_group_merge.agg_strategy_list`；分类汇总 `task2_special_agg.metrics`（+ `ratio_field_name` / `ratio_denominator`）；维度表 `task3_multi_dim.dim_metrics` + `derived_ratio_list`；总览 `task3_multi_dim.overview_metrics`。同时把新列头登记进对应 `*_fields` 与 `field_kind` |
+
+> 三类改动均在同一份代码上实跑验证过（换行业并用 `input.data_end` 排除表尾汇总行与页脚行、
+> `extra_sheets` 新增 `group` 与 `pivot` 两张表、既有表字段全量增删改后自检仍全 PASS）。
+> 配置键语义见 `references/配置驱动规范.md`。
 
 约束（换配置时同样要满足，属「同结构数据表」前提）：
 

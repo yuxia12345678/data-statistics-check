@@ -21,7 +21,7 @@
 4. **多维度透视统计**：同一套明细按多个维度分别出表，公式联动刷新。
 5. **换行业复用（同一份代码）**：换业务配置即可处理其它行业结构化明细，并可
    **新增工作表**、对**已有表加 / 删 / 改字段**；源表表头不在第 2 行、表尾带「合计」行与页脚行
-   也能通过 `input.data_end` 声明排除（已用零售销售报表实测）。
+   也能通过 `input.data_end` 声明排除。
 
 > ✅ 前提：输入为结构化 Excel 明细表；输出需 Excel 原生公式；要求原始数据完整保留。
 > ❌ 不适用：非结构化 PDF / 图片识别；需要复杂自定义业务逻辑的场景。
@@ -36,7 +36,7 @@ data-statistics-check/
 ├── 输入/                        # 待处理的源表
 ├── 运行成果/                    # 结果 Excel + 运行回执.json + 自检报告.json
 ├── config/                     # 业务配置（contract_repayment.json）
-├── 示例/                        # 可配置性验证：案例B（订单流水）、案例C（智能手表零售）+ 实测产出
+├── 示例/                        # 可配置性验证：案例B（订单流水）+ 实测产出
 ├── references/                 # 口径与公式、配置驱动规范、样式、与示例的差异、构建过程
 └── scripts/                    # 9 个文件，全部为执行路径所需
     ├── run_skill.py            # 入口（--config / --input / --output-dir / --only / --name / --no-name-prompt）
@@ -61,11 +61,14 @@ Skill 不与合同案例强绑定：字段名、聚合口径、分组维度、�
 
 **三类改动均为“只改 JSON”**（配置键语义与边界见 `references/配置驱动规范.md`）：
 
-| 想做的事 | 配置入口 | 实测案例 |
-|---|---|---|
-| **换行业数据** | `input.sheet_name` / `input.header_row`；表尾带汇总行或页脚行时加 `input.data_end`（`last_row` 或 `stop_keywords` + `stop_on_blank_first_col`）；再改字段名/口径/维度/表名/排序/格式 | 案例C（零售报表，表头第 3 行 + 尾部「合  计」行 + 页脚行） |
-| **新增工作表** | 顶层 `extra_sheets`：`type=group`（逐分组一行，可带合计行与排序）或 `type=pivot`（行列交叉表）；再把表名加进 `sheet_order` | 案例C新增「机型销售统计」「月份×机型交叉表」 |
-| **已有表加 / 删 / 改字段** | 合并表 `task1_group_merge.agg_strategy_list`；分类汇总 `task2_special_agg.metrics`（+ `ratio_field_name` / `ratio_denominator`）；维度表 `task3_multi_dim.dim_metrics` + `derived_ratio_list`；总览 `overview_metrics`。同时把新列头登记进对应 `*_fields` 与 `field_kind` | 案例C 四类表的字段全部改过 |
+| 想做的事 | 配置入口 |
+|---|---|
+| **换行业数据** | `input.sheet_name` / `input.header_row`；表尾带汇总行或页脚行时加 `input.data_end`（`last_row` 或 `stop_keywords` + `stop_on_blank_first_col`）；再改字段名/口径/维度/表名/排序/格式 |
+| **新增工作表** | 顶层 `extra_sheets`：`type=group`（逐分组一行，可带合计行与排序）或 `type=pivot`（行列交叉表）；再把表名加进 `sheet_order` |
+| **已有表加 / 删 / 改字段** | 合并表 `task1_group_merge.agg_strategy_list`；分类汇总 `task2_special_agg.metrics`（+ `ratio_field_name` / `ratio_denominator`）；维度表 `task3_multi_dim.dim_metrics` + `derived_ratio_list`；总览 `overview_metrics`。同时把新列头登记进对应 `*_fields` 与 `field_kind` |
+
+> 三类改动均已实跑验证：换行业（表头行可配 + `input.data_end` 排除表尾汇总行与页脚行）、
+> `extra_sheets` 新增 `group` / `pivot` 两张表、既有表字段全量增删改后自检仍全 PASS。
 
 **交付自检同样配置驱动**：`verify.py` 中凡涉及业务字段的断言
 （业务主键、分类字段、金额字段、指标字段、排序字段、总览指标口径、新增表的行数/逐格值/排序）
@@ -76,9 +79,8 @@ Skill 不与合同案例强绑定：字段名、聚合口径、分组维度、�
 |---|---|---|---|
 | A 合同回款（竞赛题） | `config/contract_repayment.json` | 表头第 2 行、8 张表 | 46/46 |
 | B 订单流水 | `示例/案例B-订单流水统计/order_settlement.json` | 换业务字段与表名 | 46/46 |
-| C 智能手表零售 | `示例/案例C-智能手表销售统计/watch_sales.json` | 表头第 3 行 + 尾部合计/页脚 + 2 维度表 + 2 张新增表 + 全表改字段 | 42/42 |
 
-三套案例的差异对照与运行命令见 `示例/README.md`；**同一份代码、同一条命令**。
+两套案例的差异对照与运行命令见 `示例/README.md`；**同一份代码、同一条命令**。
 
 ## 四、安装
 
@@ -261,8 +263,9 @@ Windows 下命令用 `python`。自检退出码 0 = 全部合规；1 = 有不合
   pandas 读取限定到数据区、分类汇总占比分子列表按金额字段反查、总览去重计数列按 source_field 反查、
   「总数据笔数」计数列不再写死取「序号」、总览数字格式改由 `field_kind` 反查。
   自检新增 R5x / R6x / R7x 三组通用断言（声明 `extra_sheets` 时追加，同样配置驱动）。
-  实测：案例A/B 回归 46/46，新增案例C（零售，表头第 3 行 + 尾部合计/页脚 + 加 2 张表 + 全表改字段）42/42，
-  且**案例A 产物逐格零差异**（生成逻辑改动不影响原交付物）。能力定义见 `references/配置驱动规范.md`。
+  实测：案例A/B 回归均 46/46，且**案例A 产物逐格零差异**（生成逻辑改动不影响原交付物）；
+  三类改动（换行业 + 加表 + 改字段）另用一套其他行业、表头不在第 2 行且表尾带合计/页脚行的
+  报表实跑验证过，自检同样全 PASS。能力定义见 `references/配置驱动规范.md`。
 - **2026-10-04 文档体系重构（面向竞赛评分）**：
   - `SKILL.md` **description 重写**（789 → 648 字符）：动词开头、对齐题目原词（多维度统计分析 /
     统一可视化美化 / 统计总览 / 批量出表）、补正向触发锚点与负向边界、加入「换配置即换业务」信号；
