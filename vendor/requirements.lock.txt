@@ -1,4 +1,4 @@
-# 离线依赖锁定清单（平台：Windows amd64 / CPython 3.11）
+﻿# 离线依赖锁定清单（平台：Windows amd64 / CPython 3.11）
 # 与同目录下的 .whl 一一对应，用于完全离线的可复现安装：
 #   pip install --no-index --find-links vendor -r vendor/requirements.lock.txt
 et-xmlfile==2.0.0

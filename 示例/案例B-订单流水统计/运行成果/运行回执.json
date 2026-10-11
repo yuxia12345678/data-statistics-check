@@ -1,6 +1,6 @@
 {
-  "input": "E:\\.agents\\data-statistics-check\\示例\\案例B-订单流水统计\\订单流水明细_示例.xlsx",
-  "config": "E:\\.agents\\data-statistics-check\\示例\\案例B-订单流水统计\\order_settlement.json",
+  "input": "E:\\.agents\\竞赛提交物\\AI_skill竞赛-数据统计核对-测什么都队-赵思敏\\02_技能实现源码与第三方库文件\\02_1技能实现源码\\data-statistics-check\\示例\\案例B-订单流水统计\\订单流水明细_示例.xlsx",
+  "config": "E:\\.agents\\竞赛提交物\\AI_skill竞赛-数据统计核对-测什么都队-赵思敏\\02_技能实现源码与第三方库文件\\02_1技能实现源码\\data-statistics-check\\示例\\案例B-订单流水统计\\order_settlement.json",
   "profile": "spec",
   "source_sheet": "Sheet1",
   "hidden_sheets": [],
@@ -17,7 +17,7 @@
     "库龄": 3,
     "渠道分类": 3
   },
-  "output": "E:\\.agents\\data-statistics-check\\示例\\案例B-订单流水统计\\运行成果\\订单流水统计分析结果_示例.xlsx",
+  "output": "E:\\.agents\\.tmp\\score_1005\\rerun2_caseb\\订单流水统计分析结果_示例.xlsx",
   "sheet_order": [
     "原始数据",
     "同订单号合并汇总",
@@ -42,6 +42,6 @@
   },
   "formula_errors": [],
   "formula_error_count": 0,
-  "elapsed_sec": 0.14,
+  "elapsed_sec": 0.32,
   "status": "success"
 }
